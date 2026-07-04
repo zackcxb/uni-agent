@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import os
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
 
 from uni_agent.gateway.session.codec import MessageCodec
 from uni_agent.gateway.session.types import InternalGenerationRequest, SessionHandle, Trajectory
+
+
+logger = logging.getLogger(__name__)
 
 
 class SessionPhase(str, Enum):
@@ -138,6 +145,110 @@ class GatewaySession:
         # Serializes in-flight generation against the single-active state model.
         # This is an implementation detail, not GatewaySession's public contract.
         self.generation_lock = asyncio.Lock()
+        self._debug_event_index = 0
+
+    def _debug_dump_enabled(self) -> bool:
+        return bool(os.getenv("UNI_AGENT_GATEWAY_DEBUG_DIR"))
+
+    def _debug_include_payloads(self) -> bool:
+        return os.getenv("UNI_AGENT_GATEWAY_DEBUG_LEVEL", "prefix").lower() == "full"
+
+    def _debug_max_string_chars(self) -> int:
+        raw = os.getenv("UNI_AGENT_GATEWAY_DEBUG_MAX_STRING_CHARS")
+        if raw is None:
+            return 4096
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return 4096
+
+    def _debug_json_safe(self, value: Any, max_string_chars: int) -> Any:
+        if isinstance(value, dict):
+            return {str(k): self._debug_json_safe(v, max_string_chars) for k, v in value.items()}
+        if isinstance(value, list | tuple):
+            return [self._debug_json_safe(v, max_string_chars) for v in value]
+        if isinstance(value, str):
+            if len(value) > max_string_chars:
+                omitted = len(value) - max_string_chars
+                return f"{value[:max_string_chars]}...<truncated {omitted} chars>"
+            return value
+        if isinstance(value, int | float | bool) or value is None:
+            return value
+        return repr(value)
+
+    def _debug_append_event(self, event: dict[str, Any]) -> None:
+        debug_dir = os.getenv("UNI_AGENT_GATEWAY_DEBUG_DIR")
+        if not debug_dir:
+            return
+        try:
+            if not self._debug_include_payloads():
+                event = {k: v for k, v in event.items() if k not in {"messages", "tools", "assistant_msg"}}
+            path = Path(debug_dir) / "gateway" / f"{self.handle.session_id}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                "schema_version": 1,
+                "event_index": self._debug_event_index,
+                "session_id": self.handle.session_id,
+                "created_at": time.time(),
+                **event,
+            }
+            self._debug_event_index += 1
+            with path.open("a", encoding="utf-8") as f:
+                f.write(
+                    json.dumps(self._debug_json_safe(record, self._debug_max_string_chars()), ensure_ascii=False)
+                    + "\n"
+                )
+        except Exception:
+            logger.debug("Failed to write gateway debug event", exc_info=True)
+
+    def _request_context_prefix_status(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        *,
+        include_first_diff: bool = False,
+    ) -> dict[str, Any]:
+        if self.active_trajectory is None:
+            return {"status": "new_trajectory"}
+        if self.active_tool_schemas != tools:
+            return {
+                "status": "tool_schema_mismatch",
+                "active_tool_count": len(self.active_tool_schemas or []),
+                "request_tool_count": len(tools or []),
+            }
+        history = self.message_history
+        if len(history) > len(messages):
+            return {
+                "status": "history_longer_than_request",
+                "history_len": len(history),
+                "request_len": len(messages),
+            }
+        canonical_history = [self._codec.canonicalize_message_for_prefix_comparison(m) for m in history]
+        canonical_request_prefix = [
+            self._codec.canonicalize_message_for_prefix_comparison(m) for m in messages[: len(history)]
+        ]
+        if canonical_history == canonical_request_prefix:
+            return {
+                "status": "prefix_match",
+                "history_len": len(history),
+                "request_len": len(messages),
+                "incremental_len": len(messages) - len(history),
+            }
+        result = {
+            "status": "message_prefix_mismatch",
+            "history_len": len(history),
+            "request_len": len(messages),
+        }
+        if include_first_diff:
+            for index, (left, right) in enumerate(zip(canonical_history, canonical_request_prefix, strict=False)):
+                if left != right:
+                    result["first_diff"] = {
+                        "index": index,
+                        "history": left,
+                        "request": right,
+                    }
+                    break
+        return result
 
     async def run_generation(self, request: InternalGenerationRequest, backend) -> GenerationOutcome:
         """Run one provider-normalized generation request and return its business outcome.
@@ -166,6 +277,18 @@ class GatewaySession:
                     self.video_data = list(encoded.video_data) if encoded.video_data is not None else None
                     self.active_tool_schemas = encoded.tools
                     self._touch()
+                    self._debug_append_event(
+                        {
+                            "event": "generation_result",
+                            "path": "length_exhausted",
+                            "assistant_msg": empty_msg,
+                            "finish_reason": "length",
+                            "prompt_tokens": len(encoded.context_ids),
+                            "completion_tokens": 0,
+                            "message_history_len_after": len(self.message_history),
+                            "num_materialized_trajectories": len(self.trajectories),
+                        }
+                    )
                     return GenerationOutcome(
                         assistant_msg=empty_msg,
                         finish_reason="length",
@@ -212,6 +335,19 @@ class GatewaySession:
                 self.video_data = list(encoded.video_data) if encoded.video_data is not None else None
                 self.active_tool_schemas = encoded.tools
                 self._touch()
+                self._debug_append_event(
+                    {
+                        "event": "generation_result",
+                        "path": "normal",
+                        "assistant_msg": assistant_msg,
+                        "finish_reason": finish_reason,
+                        "backend_stop_reason": output.stop_reason,
+                        "prompt_tokens": len(encoded.context_ids),
+                        "completion_tokens": len(response_ids),
+                        "message_history_len_after": len(self.message_history),
+                        "num_materialized_trajectories": len(self.trajectories),
+                    }
+                )
                 return GenerationOutcome(
                     assistant_msg=assistant_msg,
                     finish_reason=finish_reason,
@@ -226,6 +362,11 @@ class GatewaySession:
         materialized_trajectory = None
         image_data = None
         video_data = None
+        prefix_status = self._request_context_prefix_status(
+            messages,
+            tools,
+            include_first_diff=self._debug_dump_enabled(),
+        )
 
         if self.active_trajectory is None:
             image_data, video_data = await self._codec.extract_multi_modal_data(messages)
@@ -237,7 +378,7 @@ class GatewaySession:
                 request_chat_template_kwargs=request_chat_template_kwargs,
             )
             buffer = TrajectoryBuffer(prompt_ids=prompt_ids)
-        elif self._is_request_context_prefix(messages=messages, tools=tools):
+        elif prefix_status["status"] == "prefix_match":
             buffer = self._copy_trajectory_buffer(self.active_trajectory)
             image_data = list(self.image_data) if self.image_data is not None else None
             video_data = list(self.video_data) if self.video_data is not None else None
@@ -263,6 +404,24 @@ class GatewaySession:
                     and len(buffer.response_mask) + len(incremental_ids) >= self._response_length
                 ):
                     context_ids = buffer.prompt_ids + buffer.response_ids
+                    self._debug_append_event(
+                        {
+                            "event": "prepare_generation",
+                            "path": "length_exhausted",
+                            "prefix_status": prefix_status,
+                            "messages": messages,
+                            "tools": tools,
+                            "history_len_before": len(self.message_history),
+                            "request_len": len(messages),
+                            "prompt_len": len(buffer.prompt_ids),
+                            "response_len": len(buffer.response_ids),
+                            "response_mask_len": len(buffer.response_mask),
+                            "incremental_len": len(incremental_ids),
+                            "context_len": len(context_ids),
+                            "response_length_limit": self._response_length,
+                            "sampling_params": {},
+                        }
+                    )
                     return EncodedData(
                         buffer=buffer,
                         context_ids=context_ids,
@@ -300,6 +459,28 @@ class GatewaySession:
         )
         if remaining_response_budget is not None and "max_tokens" in sampling_params:
             sampling_params["max_tokens"] = min(sampling_params["max_tokens"], remaining_response_budget)
+        path = "new_trajectory"
+        if prefix_status["status"] == "prefix_match":
+            path = "prefix_incremental"
+        elif materialized_trajectory is not None:
+            path = "context_split"
+        self._debug_append_event(
+            {
+                "event": "prepare_generation",
+                "path": path,
+                "prefix_status": prefix_status,
+                "messages": messages,
+                "tools": tools,
+                "history_len_before": len(self.message_history),
+                "request_len": len(messages),
+                "prompt_len": len(buffer.prompt_ids),
+                "response_len": len(buffer.response_ids),
+                "response_mask_len": len(buffer.response_mask),
+                "context_len": len(context_ids),
+                "remaining_response_budget": remaining_response_budget,
+                "sampling_params": sampling_params,
+            }
+        )
         return EncodedData(
             buffer=buffer,
             context_ids=context_ids,
@@ -354,21 +535,6 @@ class GatewaySession:
             "num_trajectories": len(self.trajectories),
             "has_active_trajectory": self.active_trajectory is not None,
         }
-
-    def _is_request_context_prefix(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None,
-    ) -> bool:
-        if self.active_tool_schemas != tools:
-            return False
-        history = self.message_history
-        if len(history) > len(messages):
-            return False
-        return [self._codec.canonicalize_message_for_prefix_comparison(m) for m in history] == [
-            self._codec.canonicalize_message_for_prefix_comparison(m) for m in messages[: len(history)]
-        ]
 
     def _copy_trajectory_buffer(self, buffer: TrajectoryBuffer) -> TrajectoryBuffer:
         return TrajectoryBuffer(
