@@ -46,6 +46,7 @@ class _RunnerConfig:
     runner_kwargs: dict[str, object]
     dispatch_mode: str
     max_concurrent_sessions: int
+    prefix_normalizer_fqn: str | None = None
 
     def __post_init__(self) -> None:
         if not self.runner_fqn:
@@ -71,12 +72,14 @@ class _RunnerConfig:
             runner_kwargs["tool_config"] = tool_config
         dispatch_mode = str(runner_cfg.get("dispatch_mode", "inline_async"))
         max_concurrent_sessions = int(runner_cfg.get("max_concurrent_sessions", 0) or 0)
+        prefix_normalizer_fqn = runner_cfg.get("prefix_normalizer_fqn")
         try:
             return cls(
                 runner_fqn="" if runner_fqn is None else str(runner_fqn),
                 runner_kwargs=runner_kwargs,
                 dispatch_mode=dispatch_mode,
                 max_concurrent_sessions=max_concurrent_sessions,
+                prefix_normalizer_fqn=None if prefix_normalizer_fqn is None else str(prefix_normalizer_fqn),
             )
         except ValueError as exc:
             raise ValueError(f"agent_runners.{runner_name}: {exc}") from exc
@@ -484,7 +487,10 @@ class OpenAICompatibleAgentFramework(AgentFramework):
         session_id = f"session-{sample_index}-{session_index}-{uuid4().hex}"
         raw_prompt = sample_fields["raw_prompt"]
         tools_kwargs = sample_fields.get("tools_kwargs")
-        session = await self.gateway_manager.create_session(session_id)
+        session = await self.gateway_manager.create_session(
+            session_id,
+            prefix_normalizer_fqn=runner_config.prefix_normalizer_fqn,
+        )
         try:
             if runner_config.dispatch_mode == "ray_task":
                 # Ray workers run only the runner. Gateway token truth,

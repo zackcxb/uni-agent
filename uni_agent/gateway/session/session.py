@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -10,7 +11,7 @@ import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Literal
 
 from fastapi import HTTPException
 
@@ -109,6 +110,25 @@ class GenerationOutcome:
     completion_tokens: int
 
 
+@dataclass
+class PrefixAlignmentResult:
+    """Session-private prefix comparison classification.
+
+    ``kind`` values:
+    - ``EXACT_PREFIX``: base-canonicalized history matches the request prefix.
+    - ``EQUIVALENT_PREFIX``: recipe normalizer makes the two prefixes match.
+    - ``ROLLBACK_AND_REENCODE_CONTEXT``: reserved for Stage 2, not produced here.
+    - ``SPLIT``: current request must start a materialized context split.
+
+    Scheme R keeps recipe normalizers opaque to gateway code. Equivalent results
+    therefore carry no reason tags; debug events record only the alignment kind.
+    """
+
+    kind: Literal["EXACT_PREFIX", "EQUIVALENT_PREFIX", "ROLLBACK_AND_REENCODE_CONTEXT", "SPLIT"]
+    split_reason: str | None
+    first_diff: dict[str, Any] | None
+
+
 class GatewaySession:
     """Behavior-bearing state container for one gateway session.
 
@@ -125,13 +145,19 @@ class GatewaySession:
         *,
         prompt_length: int | None = None,
         response_length: int | None = None,
+        prefix_normalizer_fqn: str | None = None,
     ):
         """Create an active session bound to a handle and model codec."""
         self.handle = handle
         self._codec = codec
         self._prompt_length = prompt_length
         self._response_length = response_length
+        self._prefix_normalizer = self._load_prefix_normalizer(prefix_normalizer_fqn)
         self.active_tool_schemas: list[dict[str, Any]] | None = None
+        # Faithful record of the client-sent messages: prefix-comparison baseline,
+        # length source for incremental slicing / num_turns. Never fed to encoding
+        # (token truth lives in active_trajectory); comparison normalizes it on the
+        # fly without persisting the lossy normalized form.
         self.message_history: list[dict[str, Any]] = []
         self.image_data: list[Any] | None = None
         self.video_data: list[Any] | None = None
@@ -201,54 +227,98 @@ class GatewaySession:
         except Exception:
             logger.debug("Failed to write gateway debug event", exc_info=True)
 
-    def _request_context_prefix_status(
+    def _load_prefix_normalizer(self, fqn: str | None) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
+        """Load a recipe prefix normalizer by FQN.
+
+        Returns the raw callable, or ``None`` when no FQN is configured or the
+        import fails (falls back to strict comparison). Call-site safety
+        (deep-copy input, exceptions become mismatches) is applied where the
+        normalizer is used, in ``_compute_prefix_alignment``.
+        """
+        if not fqn:
+            return None
+
+        from verl.utils.import_utils import load_class_from_fqn
+
+        try:
+            normalizer = load_class_from_fqn(fqn, description="prefix normalizer")
+        except Exception:
+            logger.error(
+                "Failed to load prefix normalizer FQN '%s', falling back to strict",
+                fqn,
+                exc_info=True,
+            )
+            return None
+        if not callable(normalizer):
+            logger.error(
+                "Prefix normalizer FQN '%s' did not resolve to a callable, falling back to strict",
+                fqn,
+            )
+            return None
+        return normalizer
+
+    def _compute_prefix_alignment(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
-        *,
-        include_first_diff: bool = False,
-    ) -> dict[str, Any]:
+    ) -> PrefixAlignmentResult:
+        """Compute typed prefix alignment with base canon plus optional recipe normalization."""
         if self.active_trajectory is None:
-            return {"status": "new_trajectory"}
+            return PrefixAlignmentResult(kind="SPLIT", split_reason="new_trajectory", first_diff=None)
         if self.active_tool_schemas != tools:
-            return {
-                "status": "tool_schema_mismatch",
-                "active_tool_count": len(self.active_tool_schemas or []),
-                "request_tool_count": len(tools or []),
-            }
+            return PrefixAlignmentResult(kind="SPLIT", split_reason="tool_schema_mismatch", first_diff=None)
         history = self.message_history
         if len(history) > len(messages):
-            return {
-                "status": "history_longer_than_request",
-                "history_len": len(history),
-                "request_len": len(messages),
-            }
-        canonical_history = [self._codec.canonicalize_message_for_prefix_comparison(m) for m in history]
-        canonical_request_prefix = [
+            return PrefixAlignmentResult(kind="SPLIT", split_reason="history_longer_than_request", first_diff=None)
+
+        base_history = [self._codec.canonicalize_message_for_prefix_comparison(m) for m in history]
+        base_request_prefix = [
             self._codec.canonicalize_message_for_prefix_comparison(m) for m in messages[: len(history)]
         ]
-        if canonical_history == canonical_request_prefix:
-            return {
-                "status": "prefix_match",
-                "history_len": len(history),
-                "request_len": len(messages),
-                "incremental_len": len(messages) - len(history),
-            }
-        result = {
-            "status": "message_prefix_mismatch",
-            "history_len": len(history),
-            "request_len": len(messages),
-        }
-        if include_first_diff:
-            for index, (left, right) in enumerate(zip(canonical_history, canonical_request_prefix, strict=False)):
-                if left != right:
-                    result["first_diff"] = {
-                        "index": index,
-                        "history": left,
-                        "request": right,
-                    }
-                    break
-        return result
+        if base_history == base_request_prefix:
+            return PrefixAlignmentResult(kind="EXACT_PREFIX", split_reason=None, first_diff=None)
+
+        if self._prefix_normalizer is not None:
+            # Deep-copy each message so the recipe normalizer is free to mutate
+            # its copy without affecting the base-canonical payloads; treat any
+            # normalizer exception as a mismatch (fall through to SPLIT) rather
+            # than crashing the session.
+            try:
+                policy_history = [self._prefix_normalizer(copy.deepcopy(m)) for m in base_history]
+                policy_request_prefix = [self._prefix_normalizer(copy.deepcopy(m)) for m in base_request_prefix]
+                if policy_history == policy_request_prefix:
+                    return PrefixAlignmentResult(kind="EQUIVALENT_PREFIX", split_reason=None, first_diff=None)
+            except Exception:
+                logger.warning(
+                    "Prefix normalizer raised exception, treating as mismatch",
+                    exc_info=True,
+                )
+
+        # first_diff carries full message bodies and is only consumed by debug
+        # output, so compute it only when debug dumping is enabled.
+        first_diff = None
+        if self._debug_dump_enabled():
+            first_diff_index = next(
+                (
+                    i
+                    for i, (history_msg, request_msg) in enumerate(
+                        zip(base_history, base_request_prefix, strict=False)
+                    )
+                    if history_msg != request_msg
+                ),
+                None,
+            )
+            if first_diff_index is not None:
+                first_diff = {
+                    "index": first_diff_index,
+                    "history": base_history[first_diff_index],
+                    "request": base_request_prefix[first_diff_index],
+                }
+        return PrefixAlignmentResult(
+            kind="SPLIT",
+            split_reason="message_prefix_mismatch",
+            first_diff=first_diff,
+        )
 
     async def run_generation(self, request: InternalGenerationRequest, backend) -> GenerationOutcome:
         """Run one provider-normalized generation request and return its business outcome.
@@ -361,11 +431,7 @@ class GatewaySession:
         materialized_trajectory = None
         image_data = None
         video_data = None
-        prefix_status = self._request_context_prefix_status(
-            messages,
-            tools,
-            include_first_diff=self._debug_dump_enabled(),
-        )
+        prefix_alignment = self._compute_prefix_alignment(messages, tools)
 
         if self.active_trajectory is None:
             image_data, video_data = await self._codec.extract_multi_modal_data(messages)
@@ -376,7 +442,7 @@ class GatewaySession:
                 video_data=video_data,
             )
             buffer = TrajectoryBuffer(prompt_ids=prompt_ids)
-        elif prefix_status["status"] == "prefix_match":
+        elif prefix_alignment.kind in {"EXACT_PREFIX", "EQUIVALENT_PREFIX"}:
             buffer = self._copy_trajectory_buffer(self.active_trajectory)
             image_data = list(self.image_data) if self.image_data is not None else None
             video_data = list(self.video_data) if self.video_data is not None else None
@@ -405,7 +471,9 @@ class GatewaySession:
                         {
                             "event": "prepare_generation",
                             "path": "length_exhausted",
-                            "prefix_status": prefix_status,
+                            "alignment_kind": prefix_alignment.kind,
+                            "split_reason": prefix_alignment.split_reason,
+                            "first_diff": prefix_alignment.first_diff,
                             "messages": messages,
                             "tools": tools,
                             "history_len_before": len(self.message_history),
@@ -456,7 +524,7 @@ class GatewaySession:
         if remaining_response_budget is not None and "max_tokens" in sampling_params:
             sampling_params["max_tokens"] = min(sampling_params["max_tokens"], remaining_response_budget)
         path = "new_trajectory"
-        if prefix_status["status"] == "prefix_match":
+        if prefix_alignment.kind in {"EXACT_PREFIX", "EQUIVALENT_PREFIX"}:
             path = "prefix_incremental"
         elif materialized_trajectory is not None:
             path = "context_split"
@@ -464,7 +532,9 @@ class GatewaySession:
             {
                 "event": "prepare_generation",
                 "path": path,
-                "prefix_status": prefix_status,
+                "alignment_kind": prefix_alignment.kind,
+                "split_reason": prefix_alignment.split_reason,
+                "first_diff": prefix_alignment.first_diff,
                 "messages": messages,
                 "tools": tools,
                 "history_len_before": len(self.message_history),

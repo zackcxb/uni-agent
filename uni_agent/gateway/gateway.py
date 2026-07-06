@@ -221,7 +221,12 @@ class _GatewayActor:
         self._server_port = None
         self._server_base_url = None
 
-    async def create_session(self, session_id: str, metadata: dict[str, Any] | None = None) -> SessionHandle:
+    async def create_session(
+        self,
+        session_id: str,
+        metadata: dict[str, Any] | None = None,
+        prefix_normalizer_fqn: str | None = None,
+    ) -> SessionHandle:
         """Create an actor-owned session and return its provider-compatible handle."""
         self._require_started()
         if session_id in self._sessions:
@@ -237,6 +242,7 @@ class _GatewayActor:
             codec=self._codec,
             prompt_length=self._prompt_length,
             response_length=self._response_length,
+            prefix_normalizer_fqn=prefix_normalizer_fqn,
         )
         return handle
 
