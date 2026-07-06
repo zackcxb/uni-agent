@@ -278,6 +278,77 @@ class MessageCodec:
             )
         return ids[len(self._system_prompt) :]
 
+    def validate_multi_modal_placeholders(
+        self,
+        messages: list[dict[str, Any]],
+        token_ids: list[int],
+        image_data: list[Any] | None,
+        video_data: list[Any] | None,
+    ) -> bool:
+        """Validate processor placeholder order/count for rollback re-encoding.
+
+        Rollback can safely truncate stored media only when the re-encoded
+        suffix contains the same ordered image/video placeholder sequence as
+        the request blocks it extracted. Text-only and tokenizer-only sessions
+        have no processor placeholders to validate.
+        """
+        if self._processor is None:
+            return True
+
+        expected_types: list[str] = []
+        expected_image_refs: list[Any] = []
+        expected_video_refs: list[Any] = []
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                part_type = part.get("type")
+                if part_type in {"image", "image_url"}:
+                    expected_types.append("image")
+                    image_url = part.get("image_url")
+                    if isinstance(image_url, dict) and "url" in image_url:
+                        expected_image_refs.append(image_url["url"])
+                    else:
+                        expected_image_refs.append(part.get("image", image_url))
+                elif part_type in {"video", "video_url"}:
+                    expected_types.append("video")
+                    video_url = part.get("video_url")
+                    if isinstance(video_url, dict) and "url" in video_url:
+                        expected_video_refs.append(video_url["url"])
+                    else:
+                        expected_video_refs.append(part.get("video", video_url))
+
+        image_count = len(image_data or [])
+        video_count = len(video_data or [])
+        if expected_types.count("image") != image_count or expected_types.count("video") != video_count:
+            return False
+        if image_data is not None and all(isinstance(item, str) for item in image_data):
+            if list(image_data) != expected_image_refs:
+                return False
+        if video_data is not None and all(isinstance(item, str) for item in video_data):
+            if list(video_data) != expected_video_refs:
+                return False
+        if not expected_types:
+            return image_count == 0 and video_count == 0
+
+        image_token_id = getattr(self._processor, "image_token_id", None)
+        video_token_id = getattr(self._processor, "video_token_id", None)
+        if expected_types.count("image") and not isinstance(image_token_id, int):
+            return False
+        if expected_types.count("video") and not isinstance(video_token_id, int):
+            return False
+
+        actual_types: list[str] = []
+        for token_id in token_ids:
+            if token_id == image_token_id:
+                actual_types.append("image")
+            elif token_id == video_token_id:
+                actual_types.append("video")
+        return actual_types == expected_types
+
     async def decode_response(
         self,
         response_ids: list[int],

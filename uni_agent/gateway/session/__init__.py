@@ -7,12 +7,13 @@ serves: trajectory buffering and message encoding/decoding.
 """
 
 from .codec import MessageCodec
-from .session import GatewaySession, TrajectoryBuffer
+from .session import GatewaySession, LastTurnStart, TrajectoryBuffer
 from .types import InternalGenerationRequest, SessionHandle, Trajectory
 
 __all__ = [
     "InternalGenerationRequest",
     "GatewaySession",
+    "LastTurnStart",
     "MessageCodec",
     "SessionHandle",
     "Trajectory",

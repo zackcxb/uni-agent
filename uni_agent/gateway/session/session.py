@@ -37,6 +37,23 @@ class SessionPhase(str, Enum):
 
 
 @dataclass
+class LastTurnStart:
+    """Stable lengths at the previous request delta start.
+
+    This is the rollback target for a latest-turn rewrite. The truncation
+    boundary, prefix-comparison tolerance boundary, and masked re-encode start
+    are intentionally the same turn-level boundary.
+    """
+
+    response_ids_len: int
+    response_mask_len: int
+    response_logprobs_len: int
+    message_history_len: int
+    image_data_len: int
+    video_data_len: int
+
+
+@dataclass
 class TrajectoryBuffer:
     """Mutable token buffer for the active trajectory under construction.
 
@@ -47,12 +64,16 @@ class TrajectoryBuffer:
             output and ``0`` for continuation context tokens.
         response_logprobs: Log probabilities aligned with ``response_ids`` when
             present; continuation context tokens use ``0.0``.
+        last_turn_start: Stable lengths captured before the latest request-side
+            delta was encoded; used as the rollback boundary for one-turn
+            rewrites.
     """
 
     prompt_ids: list[int]
     response_ids: list[int] = field(default_factory=list)
     response_mask: list[int] = field(default_factory=list)
     response_logprobs: list[float] = field(default_factory=list)
+    last_turn_start: LastTurnStart | None = None
 
 
 @dataclass
@@ -117,7 +138,8 @@ class PrefixAlignmentResult:
     ``kind`` values:
     - ``EXACT_PREFIX``: base-canonicalized history matches the request prefix.
     - ``EQUIVALENT_PREFIX``: recipe normalizer makes the two prefixes match.
-    - ``ROLLBACK_AND_REENCODE_CONTEXT``: reserved for Stage 2, not produced here.
+    - ``ROLLBACK_AND_REENCODE_CONTEXT``: latest-turn rewrite; truncate to the
+      last turn start, re-encode the current request suffix as masked context.
     - ``SPLIT``: current request must start a materialized context split.
 
     Scheme R keeps recipe normalizers opaque to gateway code. Equivalent results
@@ -268,16 +290,15 @@ class GatewaySession:
         if self.active_tool_schemas != tools:
             return PrefixAlignmentResult(kind="SPLIT", split_reason="tool_schema_mismatch", first_diff=None)
         history = self.message_history
-        if len(history) > len(messages):
-            return PrefixAlignmentResult(kind="SPLIT", split_reason="history_longer_than_request", first_diff=None)
 
         base_history = [self._codec.canonicalize_message_for_prefix_comparison(m) for m in history]
-        base_request_prefix = [
-            self._codec.canonicalize_message_for_prefix_comparison(m) for m in messages[: len(history)]
-        ]
-        if base_history == base_request_prefix:
+        base_request = [self._codec.canonicalize_message_for_prefix_comparison(m) for m in messages]
+        base_request_prefix = base_request[: len(history)]
+        if len(messages) >= len(history) and base_history == base_request_prefix:
             return PrefixAlignmentResult(kind="EXACT_PREFIX", split_reason=None, first_diff=None)
 
+        policy_history = base_history
+        policy_request = base_request
         if self._prefix_normalizer is not None:
             # Deep-copy each message so the recipe normalizer is free to mutate
             # its copy without affecting the base-canonical payloads; treat any
@@ -285,24 +306,49 @@ class GatewaySession:
             # than crashing the session.
             try:
                 policy_history = [self._prefix_normalizer(copy.deepcopy(m)) for m in base_history]
-                policy_request_prefix = [self._prefix_normalizer(copy.deepcopy(m)) for m in base_request_prefix]
-                if policy_history == policy_request_prefix:
+                policy_request = [self._prefix_normalizer(copy.deepcopy(m)) for m in base_request]
+                if len(messages) >= len(history) and policy_history == policy_request[: len(history)]:
                     return PrefixAlignmentResult(kind="EQUIVALENT_PREFIX", split_reason=None, first_diff=None)
             except Exception:
                 logger.warning(
                     "Prefix normalizer raised exception, treating as mismatch",
                     exc_info=True,
                 )
+                return PrefixAlignmentResult(
+                    kind="SPLIT",
+                    split_reason="message_prefix_mismatch",
+                    first_diff=None,
+                )
+
+        compare_len = min(len(history), len(messages))
+        # Length divergence is folded into div instead of short-circuiting.
+        # A shorter request is the normal signal for latest-turn deletion.
+        content_diff = next(
+            (
+                i
+                for i, (history_msg, request_msg) in enumerate(
+                    zip(policy_history[:compare_len], policy_request[:compare_len], strict=False)
+                )
+                if history_msg != request_msg
+            ),
+            None,
+        )
+        if content_diff is not None:
+            div = content_diff
+        elif len(messages) < len(history):
+            div = len(messages)
+        else:
+            div = None
 
         # first_diff carries full message bodies and is only consumed by debug
         # output, so compute it only when debug dumping is enabled.
         first_diff = None
-        if self._debug_dump_enabled():
+        if div is not None and self._debug_dump_enabled():
             first_diff_index = next(
                 (
                     i
                     for i, (history_msg, request_msg) in enumerate(
-                        zip(base_history, base_request_prefix, strict=False)
+                        zip(base_history[:compare_len], base_request[:compare_len], strict=False)
                     )
                     if history_msg != request_msg
                 ),
@@ -312,11 +358,44 @@ class GatewaySession:
                 first_diff = {
                     "index": first_diff_index,
                     "history": base_history[first_diff_index],
-                    "request": base_request_prefix[first_diff_index],
+                    "request": base_request[first_diff_index],
                 }
+            elif len(messages) < len(history):
+                first_diff = {
+                    "index": len(messages),
+                    "history": base_history[len(messages)],
+                    "request": None,
+                }
+
+        if div is None:
+            return PrefixAlignmentResult(
+                kind="SPLIT",
+                split_reason="message_prefix_mismatch",
+                first_diff=first_diff,
+            )
+
+        last_turn_start = self.active_trajectory.last_turn_start
+        if last_turn_start is None:
+            return PrefixAlignmentResult(
+                kind="SPLIT",
+                split_reason="missing_last_turn_start",
+                first_diff=first_diff,
+            )
+
+        stable_prefix_len = last_turn_start.message_history_len
+        # The comparison tolerance boundary is exactly the truncation boundary:
+        # any divergence at or after last_turn_start can be deleted and
+        # re-encoded as mask=0 context; anything before it is a deeper rewrite.
+        if div >= stable_prefix_len:
+            return PrefixAlignmentResult(
+                kind="ROLLBACK_AND_REENCODE_CONTEXT",
+                split_reason=None,
+                first_diff=first_diff,
+            )
+
         return PrefixAlignmentResult(
             kind="SPLIT",
-            split_reason="message_prefix_mismatch",
+            split_reason="deeper_than_last_turn",
             first_diff=first_diff,
         )
 
@@ -379,11 +458,18 @@ class GatewaySession:
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"{e.__class__.__name__}: {e}") from e
 
+            had_response_without_logprobs = bool(encoded.buffer.response_ids) and not encoded.buffer.response_logprobs
             response_ids = list(output.token_ids)
             encoded.buffer.response_ids.extend(response_ids)
             encoded.buffer.response_mask.extend([1] * len(response_ids))
             if output.log_probs is not None:
-                encoded.buffer.response_logprobs.extend(list(output.log_probs))
+                log_probs = list(output.log_probs)
+                assert len(log_probs) == len(response_ids), "backend logprobs must align with token_ids"
+                if not had_response_without_logprobs:
+                    encoded.buffer.response_logprobs.extend(log_probs)
+            elif encoded.buffer.response_logprobs:
+                raise RuntimeError("backend missing logprob mid-session")
+            self._assert_response_logprob_alignment(encoded.buffer)
 
             assistant_msg, finish_reason = await self._codec.decode_response(
                 response_ids,
@@ -432,6 +518,16 @@ class GatewaySession:
         image_data = None
         video_data = None
         prefix_alignment = self._compute_prefix_alignment(messages, tools)
+        stable_prefix_len = (
+            self.active_trajectory.last_turn_start.message_history_len
+            if self.active_trajectory is not None and self.active_trajectory.last_turn_start is not None
+            else None
+        )
+        rollback_dropped_tokens = 0
+        rollback_dropped_trainable_tokens = 0
+        rollback_from_response_len = None
+        rollback_to_response_len = None
+        masked_reencoded_tokens = 0
 
         if self.active_trajectory is None:
             image_data, video_data = await self._codec.extract_multi_modal_data(messages)
@@ -442,10 +538,23 @@ class GatewaySession:
                 video_data=video_data,
             )
             buffer = TrajectoryBuffer(prompt_ids=prompt_ids)
+            self._init_new_turn_start(
+                buffer=buffer,
+                messages=messages,
+                image_data=image_data,
+                video_data=video_data,
+            )
         elif prefix_alignment.kind in {"EXACT_PREFIX", "EQUIVALENT_PREFIX"}:
             buffer = self._copy_trajectory_buffer(self.active_trajectory)
+            self._assert_response_logprob_alignment(buffer)
             image_data = list(self.image_data) if self.image_data is not None else None
             video_data = list(self.video_data) if self.video_data is not None else None
+            buffer.last_turn_start = self._snapshot_last_turn_start(
+                buffer=buffer,
+                message_history_len=len(self.message_history),
+                image_data=image_data,
+                video_data=video_data,
+            )
             incremental_messages = messages[len(self.message_history) :]
             if incremental_messages:
                 new_image_data, new_video_data = await self._codec.extract_multi_modal_data(incremental_messages)
@@ -462,6 +571,7 @@ class GatewaySession:
                     image_data=new_image_data,
                     video_data=new_video_data,
                 )
+                masked_reencoded_tokens = len(incremental_ids)
                 if (
                     self._response_length is not None
                     and len(buffer.response_mask) + len(incremental_ids) >= self._response_length
@@ -478,12 +588,18 @@ class GatewaySession:
                             "tools": tools,
                             "history_len_before": len(self.message_history),
                             "request_len": len(messages),
+                            "stable_prefix_len": stable_prefix_len,
                             "prompt_len": len(buffer.prompt_ids),
                             "response_len": len(buffer.response_ids),
                             "response_mask_len": len(buffer.response_mask),
                             "incremental_len": len(incremental_ids),
                             "context_len": len(context_ids),
                             "response_length_limit": self._response_length,
+                            "rollback_dropped_tokens": rollback_dropped_tokens,
+                            "rollback_dropped_trainable_tokens": rollback_dropped_trainable_tokens,
+                            "rollback_from_response_len": rollback_from_response_len,
+                            "rollback_to_response_len": rollback_to_response_len,
+                            "masked_reencoded_tokens": masked_reencoded_tokens,
                             "sampling_params": {},
                         }
                     )
@@ -505,6 +621,156 @@ class GatewaySession:
                 buffer.response_mask.extend([0] * len(incremental_ids))
                 if buffer.response_logprobs:
                     buffer.response_logprobs.extend([0.0] * len(incremental_ids))
+                self._assert_response_logprob_alignment(buffer)
+        elif prefix_alignment.kind == "ROLLBACK_AND_REENCODE_CONTEXT":
+            last_turn_start = self.active_trajectory.last_turn_start
+            assert last_turn_start is not None
+            buffer = self._copy_trajectory_buffer(self.active_trajectory)
+            self._assert_response_logprob_alignment(buffer)
+
+            rollback_from_response_len = len(buffer.response_ids)
+            rollback_to_response_len = last_turn_start.response_ids_len
+            rollback_dropped_tokens = rollback_from_response_len - rollback_to_response_len
+            rollback_dropped_trainable_tokens = sum(buffer.response_mask[last_turn_start.response_mask_len :])
+
+            assert last_turn_start.response_ids_len <= len(buffer.response_ids)
+            assert last_turn_start.response_mask_len <= len(buffer.response_mask)
+            assert last_turn_start.response_logprobs_len <= len(buffer.response_logprobs)
+            del buffer.response_ids[last_turn_start.response_ids_len :]
+            del buffer.response_mask[last_turn_start.response_mask_len :]
+            del buffer.response_logprobs[last_turn_start.response_logprobs_len :]
+            self._assert_response_logprob_alignment(buffer)
+
+            stored_image_data = list(self.image_data or [])
+            stored_video_data = list(self.video_data or [])
+            multimodal_safe = (
+                last_turn_start.image_data_len <= len(stored_image_data)
+                and last_turn_start.video_data_len <= len(stored_video_data)
+            )
+            boundary_image_data = stored_image_data[: last_turn_start.image_data_len] or None
+            boundary_video_data = stored_video_data[: last_turn_start.video_data_len] or None
+            image_data = list(boundary_image_data) if boundary_image_data is not None else None
+            video_data = list(boundary_video_data) if boundary_video_data is not None else None
+            suffix_messages = messages[last_turn_start.message_history_len :]
+            suffix_ids: list[int] = []
+
+            if multimodal_safe and suffix_messages:
+                new_image_data, new_video_data = await self._codec.extract_multi_modal_data(suffix_messages)
+                suffix_ids = self._codec.encode_incremental(
+                    suffix_messages,
+                    image_data=new_image_data,
+                    video_data=new_video_data,
+                )
+                multimodal_safe = self._codec.validate_multi_modal_placeholders(
+                    suffix_messages,
+                    suffix_ids,
+                    new_image_data,
+                    new_video_data,
+                )
+                if multimodal_safe:
+                    if new_image_data:
+                        if image_data is None:
+                            image_data = []
+                        image_data.extend(new_image_data)
+                    if new_video_data:
+                        if video_data is None:
+                            video_data = []
+                        video_data.extend(new_video_data)
+            elif multimodal_safe:
+                multimodal_safe = self._codec.validate_multi_modal_placeholders(
+                    suffix_messages,
+                    suffix_ids,
+                    None,
+                    None,
+                )
+
+            if not multimodal_safe:
+                prefix_alignment = PrefixAlignmentResult(
+                    kind="SPLIT",
+                    split_reason="multimodal_rollback_unsafe",
+                    first_diff=prefix_alignment.first_diff,
+                )
+                rollback_dropped_tokens = 0
+                rollback_dropped_trainable_tokens = 0
+                rollback_from_response_len = None
+                rollback_to_response_len = None
+                masked_reencoded_tokens = 0
+                materialized_trajectory = self._build_materialized_trajectory(active=self.active_trajectory)
+                image_data, video_data = await self._codec.extract_multi_modal_data(messages)
+                prompt_ids = self._codec.encode_full(
+                    messages,
+                    tools=tools,
+                    image_data=image_data,
+                    video_data=video_data,
+                )
+                buffer = TrajectoryBuffer(prompt_ids=prompt_ids)
+                self._init_new_turn_start(
+                    buffer=buffer,
+                    messages=messages,
+                    image_data=image_data,
+                    video_data=video_data,
+                )
+            else:
+                # Truncate deletes the latest turn. The current suffix is then
+                # re-encoded as mask=0 context; only the backend output from
+                # this request will be trainable mask=1.
+                buffer.last_turn_start = self._snapshot_last_turn_start(
+                    buffer=buffer,
+                    message_history_len=last_turn_start.message_history_len,
+                    image_data=boundary_image_data,
+                    video_data=boundary_video_data,
+                )
+                masked_reencoded_tokens = len(suffix_ids)
+                if (
+                    self._response_length is not None
+                    and len(buffer.response_mask) + len(suffix_ids) >= self._response_length
+                ):
+                    context_ids = buffer.prompt_ids + buffer.response_ids
+                    self._debug_append_event(
+                        {
+                            "event": "prepare_generation",
+                            "path": "length_exhausted",
+                            "alignment_kind": prefix_alignment.kind,
+                            "split_reason": prefix_alignment.split_reason,
+                            "first_diff": prefix_alignment.first_diff,
+                            "messages": messages,
+                            "tools": tools,
+                            "history_len_before": len(self.message_history),
+                            "request_len": len(messages),
+                            "stable_prefix_len": stable_prefix_len,
+                            "prompt_len": len(buffer.prompt_ids),
+                            "response_len": len(buffer.response_ids),
+                            "response_mask_len": len(buffer.response_mask),
+                            "incremental_len": len(suffix_ids),
+                            "context_len": len(context_ids),
+                            "response_length_limit": self._response_length,
+                            "rollback_dropped_tokens": rollback_dropped_tokens,
+                            "rollback_dropped_trainable_tokens": rollback_dropped_trainable_tokens,
+                            "rollback_from_response_len": rollback_from_response_len,
+                            "rollback_to_response_len": rollback_to_response_len,
+                            "masked_reencoded_tokens": masked_reencoded_tokens,
+                            "sampling_params": {},
+                        }
+                    )
+                    return EncodedData(
+                        buffer=buffer,
+                        context_ids=context_ids,
+                        sampling_params={},
+                        messages=list(messages),
+                        tools=tools,
+                        image_data=image_data,
+                        video_data=video_data,
+                        materialized_trajectory=None,
+                        length_exhausted_trajectory=self._build_materialized_trajectory(
+                            active=buffer,
+                            extra_fields={"materialization_reason": "max_response_length"},
+                        ),
+                    )
+                buffer.response_ids.extend(suffix_ids)
+                buffer.response_mask.extend([0] * len(suffix_ids))
+                if buffer.response_logprobs:
+                    buffer.response_logprobs.extend([0.0] * len(suffix_ids))
+                self._assert_response_logprob_alignment(buffer)
         else:
             materialized_trajectory = self._build_materialized_trajectory(active=self.active_trajectory)
             image_data, video_data = await self._codec.extract_multi_modal_data(messages)
@@ -515,6 +781,12 @@ class GatewaySession:
                 video_data=video_data,
             )
             buffer = TrajectoryBuffer(prompt_ids=prompt_ids)
+            self._init_new_turn_start(
+                buffer=buffer,
+                messages=messages,
+                image_data=image_data,
+                video_data=video_data,
+            )
 
         context_ids = buffer.prompt_ids + buffer.response_ids
         sampling_params = dict(request["sampling_params"])
@@ -526,6 +798,8 @@ class GatewaySession:
         path = "new_trajectory"
         if prefix_alignment.kind in {"EXACT_PREFIX", "EQUIVALENT_PREFIX"}:
             path = "prefix_incremental"
+        elif prefix_alignment.kind == "ROLLBACK_AND_REENCODE_CONTEXT":
+            path = "prefix_rollback"
         elif materialized_trajectory is not None:
             path = "context_split"
         self._debug_append_event(
@@ -539,11 +813,17 @@ class GatewaySession:
                 "tools": tools,
                 "history_len_before": len(self.message_history),
                 "request_len": len(messages),
+                "stable_prefix_len": stable_prefix_len,
                 "prompt_len": len(buffer.prompt_ids),
                 "response_len": len(buffer.response_ids),
                 "response_mask_len": len(buffer.response_mask),
                 "context_len": len(context_ids),
                 "remaining_response_budget": remaining_response_budget,
+                "rollback_dropped_tokens": rollback_dropped_tokens,
+                "rollback_dropped_trainable_tokens": rollback_dropped_trainable_tokens,
+                "rollback_from_response_len": rollback_from_response_len,
+                "rollback_to_response_len": rollback_to_response_len,
+                "masked_reencoded_tokens": masked_reencoded_tokens,
                 "sampling_params": sampling_params,
             }
         )
@@ -608,6 +888,45 @@ class GatewaySession:
             response_ids=list(buffer.response_ids),
             response_mask=list(buffer.response_mask),
             response_logprobs=list(buffer.response_logprobs),
+            last_turn_start=copy.copy(buffer.last_turn_start),
+        )
+
+    def _assert_response_logprob_alignment(self, buffer: TrajectoryBuffer) -> None:
+        assert len(buffer.response_logprobs) in {
+            0,
+            len(buffer.response_ids),
+        }, "response_logprobs must be empty or aligned with response_ids"
+
+    def _snapshot_last_turn_start(
+        self,
+        *,
+        buffer: TrajectoryBuffer,
+        message_history_len: int,
+        image_data: list[Any] | None,
+        video_data: list[Any] | None,
+    ) -> LastTurnStart:
+        return LastTurnStart(
+            response_ids_len=len(buffer.response_ids),
+            response_mask_len=len(buffer.response_mask),
+            response_logprobs_len=len(buffer.response_logprobs),
+            message_history_len=message_history_len,
+            image_data_len=len(image_data or []),
+            video_data_len=len(video_data or []),
+        )
+
+    def _init_new_turn_start(
+        self,
+        *,
+        buffer: TrajectoryBuffer,
+        messages: list[dict[str, Any]],
+        image_data: list[Any] | None,
+        video_data: list[Any] | None,
+    ) -> None:
+        buffer.last_turn_start = self._snapshot_last_turn_start(
+            buffer=buffer,
+            message_history_len=len(messages),
+            image_data=image_data,
+            video_data=video_data,
         )
 
     def _materialize_active_trajectory(self) -> None:

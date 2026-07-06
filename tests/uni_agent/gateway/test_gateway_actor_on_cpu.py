@@ -911,8 +911,9 @@ async def test_gateway_actor_continuation_preserves_prompt_and_generation_masks(
 @pytest.mark.asyncio
 async def test_gateway_actor_serializes_same_session_concurrent_requests(ray_runtime):
     """Two concurrent requests to the same session are serialized by
-    ``generation_lock``, each producing its own trajectory with correct
-    response tokens and masks."""
+    ``generation_lock``. The second request arrives with the same request
+    prefix after the first response has committed, so Stage 2 treats it as a
+    latest-turn retry and rolls back the first response."""
     from uni_agent.gateway.config import GatewayActorConfig
     from uni_agent.gateway.gateway import GatewayActor
 
@@ -941,11 +942,9 @@ async def test_gateway_actor_serializes_same_session_concurrent_requests(ray_run
 
     assert first.status_code == 200
     assert second.status_code == 200
-    assert len(trajectories) == 2
-    assert trajectories[0].response_ids == [ord(char) for char in "FIRST"]
-    assert trajectories[1].response_ids == [ord(char) for char in "SECOND"]
-    assert trajectories[0].response_mask == [1] * len("FIRST")
-    assert trajectories[1].response_mask == [1] * len("SECOND")
+    assert len(trajectories) == 1
+    assert trajectories[0].response_ids == [ord(char) for char in "SECOND"]
+    assert trajectories[0].response_mask == [1] * len("SECOND")
 
 
 @pytest.mark.asyncio
