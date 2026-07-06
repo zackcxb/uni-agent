@@ -201,10 +201,8 @@ class MessageCodec:
         tools: list[dict[str, Any]] | None = None,
         image_data: list[Any] | None = None,
         video_data: list[Any] | None = None,
-        request_chat_template_kwargs: dict[str, Any] | None = None,
     ) -> list[int]:
         """Encode a full chat history into prompt token IDs."""
-        chat_template_kwargs = {**self._apply_chat_template_kwargs, **(request_chat_template_kwargs or {})}
         if self._processor is not None:
             raw_prompt = _apply_chat_template(
                 self._processor,
@@ -212,7 +210,7 @@ class MessageCodec:
                 tools=tools,
                 add_generation_prompt=True,
                 tokenize=False,
-                **chat_template_kwargs,
+                **self._apply_chat_template_kwargs,
             )
             videos = video_data
             video_metadata = None
@@ -235,7 +233,7 @@ class MessageCodec:
                 messages,
                 tools=tools,
                 add_generation_prompt=True,
-                **chat_template_kwargs,
+                **self._apply_chat_template_kwargs,
             )
         )
 
@@ -245,17 +243,15 @@ class MessageCodec:
         messages: list[dict[str, Any]],
         image_data: list[Any] | None = None,
         video_data: list[Any] | None = None,
-        request_chat_template_kwargs: dict[str, Any] | None = None,
     ) -> list[int]:
         """Encode continuation messages without the cached system prompt prefix."""
-        chat_template_kwargs = {**self._apply_chat_template_kwargs, **(request_chat_template_kwargs or {})}
         if self._processor is not None:
             raw_prompt = _apply_chat_template(
                 self._processor,
                 messages,
                 add_generation_prompt=True,
                 tokenize=False,
-                **chat_template_kwargs,
+                **self._apply_chat_template_kwargs,
             )
             videos = video_data
             video_metadata = None
@@ -277,7 +273,7 @@ class MessageCodec:
                     self._tokenizer,
                     messages,
                     add_generation_prompt=True,
-                    **chat_template_kwargs,
+                    **self._apply_chat_template_kwargs,
                 )
             )
         return ids[len(self._system_prompt) :]

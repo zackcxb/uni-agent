@@ -251,48 +251,6 @@ def test_prefix_canonicalization_ignores_provider_ids_and_normalizes_arguments()
 
 
 @pytest.mark.asyncio
-async def test_request_chat_template_kwargs_forwarded(monkeypatch):
-    """Per-request ``chat_template_kwargs`` are forwarded to the chat-template
-    call alongside the codec-level defaults, and per-request values take
-    precedence over matching codec defaults."""
-    import uni_agent.gateway.session.codec as codec_mod
-    from uni_agent.gateway.config import GatewayActorConfig
-    from uni_agent.gateway.gateway import _GatewayActor
-
-    actor = _GatewayActor(
-        GatewayActorConfig(
-            tokenizer=FakeTokenizer(),
-            apply_chat_template_kwargs={"enable_thinking": False},
-        ),
-        InspectingBackend(),
-    )
-    captured_kwargs = {}
-    template_fn_name = "_apply_chat" + "_template"
-    original_template = getattr(codec_mod, template_fn_name)
-
-    def _spy(tokenizer, messages, **kwargs):
-        captured_kwargs.update(kwargs)
-        return original_template(tokenizer, messages, **kwargs)
-
-    monkeypatch.setattr(codec_mod, template_fn_name, _spy)
-    await actor.start()
-    try:
-        await actor.create_session("s1")
-        await actor._handle_openai_chat_completions(
-            "s1",
-            {
-                "messages": [{"role": "user", "content": "hi"}],
-                "chat_template_kwargs": {"enable_thinking": True, "extra_flag": "x"},
-            },
-        )
-
-        assert captured_kwargs["enable_thinking"] is True
-        assert captured_kwargs["extra_flag"] == "x"
-    finally:
-        await actor.shutdown()
-
-
-@pytest.mark.asyncio
 async def test_unsupported_capabilities_rejected_with_400():
     """OpenAI capabilities that the gateway does not support (``n > 1``,
     ``response_format``, ``tool_choice="required"``, and per-function

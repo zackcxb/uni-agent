@@ -358,7 +358,6 @@ class GatewaySession:
     async def _prepare_generation_inputs(self, request: InternalGenerationRequest) -> EncodedData:
         messages = request["messages"]
         tools = request["tools"]
-        request_chat_template_kwargs = request["chat_template_kwargs"]
         materialized_trajectory = None
         image_data = None
         video_data = None
@@ -375,7 +374,6 @@ class GatewaySession:
                 tools=tools,
                 image_data=image_data,
                 video_data=video_data,
-                request_chat_template_kwargs=request_chat_template_kwargs,
             )
             buffer = TrajectoryBuffer(prompt_ids=prompt_ids)
         elif prefix_status["status"] == "prefix_match":
@@ -397,7 +395,6 @@ class GatewaySession:
                     incremental_messages,
                     image_data=new_image_data,
                     video_data=new_video_data,
-                    request_chat_template_kwargs=request_chat_template_kwargs,
                 )
                 if (
                     self._response_length is not None
@@ -448,7 +445,6 @@ class GatewaySession:
                 tools=tools,
                 image_data=image_data,
                 video_data=video_data,
-                request_chat_template_kwargs=request_chat_template_kwargs,
             )
             buffer = TrajectoryBuffer(prompt_ids=prompt_ids)
 
