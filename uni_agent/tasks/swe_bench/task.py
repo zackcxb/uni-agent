@@ -45,7 +45,7 @@ class SWEBenchTask(Task):
                 logger.info("applying gold patch to /testbed")
                 await sandbox.write_file("/tmp/gold_patch.patch", sample["patch"])
                 await sandbox.exec(["git", "apply", "--whitespace=fix", "/tmp/gold_patch.patch"], workdir="/testbed")
-                finished = True
+                episode_finished = True
             else:
                 agent = self.build_agent()
                 messages = cfg.prompt
@@ -55,7 +55,7 @@ class SWEBenchTask(Task):
                     messages=messages,
                     workdir="/testbed",
                 )
-                finished = agent_result.finished
+                episode_finished = agent_result.episode_finished
 
             from .reward import compute_reward
 
@@ -65,6 +65,6 @@ class SWEBenchTask(Task):
             return TaskResult(
                 reward=float(result["resolved"]),
                 accuracy=float(result["resolved"]),
-                finished=finished,
+                episode_finished=episode_finished,
                 extra_info=result,
             )
