@@ -85,7 +85,7 @@ def compute_score(
 ) -> dict[str, int | float | bool]:
     """Pass the managed runner's reward payload through a RewardLoopWorker."""
     runner_reward_info = extra_info["runner_reward_info"]
-    return {"score": float(runner_reward_info["reward"]), **runner_reward_info["metrics"]}
+    return {**runner_reward_info["metrics"], "score": float(runner_reward_info["reward"])}
 
 
 async def run_task(

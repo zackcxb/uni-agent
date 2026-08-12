@@ -219,7 +219,7 @@ def test_compute_score_passes_through_runner_reward_info():
         extra_info={
             "runner_reward_info": {
                 "reward": "0.5",
-                "metrics": {"acc": True, "format": 0.8},
+                "metrics": {"acc": True, "format": 0.8, "score": 0.75},
                 "reward_context": {"trace": "unused by pass-through"},
             }
         },
