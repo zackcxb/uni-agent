@@ -152,8 +152,10 @@ TaskResult(
 Custom Tasks may use any evaluation method, but the built-in Task Runner currently
 expects `TaskResult.reward` to be a scalar outcome reward. `TaskResult.accuracy`
 becomes the validation metric `acc`; `extra_info` becomes structured
-`reward_context` for an optional Reward Loop Worker and is not aggregated as a
-metric. Custom managed Runners that need additional scalar metrics can return an
+`reward_context` and is not aggregated as a metric. When streaming Reward Loop
+Worker handles are available, the Framework passes the complete Runner result
+under `extra_info["runner_reward_info"]` and the Worker's scorer decides how to
+use it. Custom managed Runners that need additional scalar metrics can return an
 `EpisodeResult` directly.
 
 `TaskResult.episode_finished` is factual episode metadata copied from

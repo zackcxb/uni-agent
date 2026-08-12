@@ -161,24 +161,37 @@ EpisodeResult(
 )
 ```
 
-The Agent Framework applies the result to finalized trajectories and writes a sparse token-level `rm_scores` tensor with the reward on the final token. Validation metrics are serialized under `extra_fields["reward_extra_info"]`, matching the trainer's TQ contract.
+How the Agent Framework consumes the result depends on the reward topology:
+
+- With streaming Reward Loop Worker handles, the Worker always processes the finalized trajectory, even when the Runner returned a reward. The Framework exposes the Runner result under `extra_info["runner_reward_info"]`; the Worker owns the final reward and validation metrics.
+- Without streaming handles, the Framework retains the Runner reward and metrics and writes a sparse token-level `rm_scores` tensor with the reward on the final token. This is the final result for standalone/inference. TQ training subsequently runs its colocated reward pass and replaces `rm_scores`.
+
+Validation metrics are serialized under `extra_fields["reward_extra_info"]`, matching the trainer's TQ contract.
 
 The result fields have separate contracts:
 
-- `reward` is the scalar outcome reward. `None` delegates scoring to an optional Reward Loop Worker.
+- `reward` is the Runner's scalar outcome reward. A streaming Worker receives it as scorer input and decides the final score.
 - `metrics` contains only scalar validation values (`int`, `float`, or `bool`), such as `acc`. The key `reward` is reserved for the outcome column and is rejected inside metrics.
 - `episode_finished` is a tri-state episode fact, not a validation metric.
-- `reward_context` may contain structured scorer input. It is passed to the Reward Loop Worker and is never aggregated as a validation metric.
+- `reward_context` may contain structured scorer input. A streaming Worker receives it under `extra_info["runner_reward_info"]`; it is never aggregated directly as a validation metric.
 
-When both the Runner and Reward Loop Worker provide a metric with the same name,
-the worker value wins. Use distinct metric names when the sources have different
-semantics.
+Runner and Worker metrics are not merged in streaming mode. The Worker's
+`reward_extra_info` is the complete final metric set.
 
 Agent completion is factual episode metadata; the Framework, not the Task, decides how training consumes it. When the training configuration enables `mask_unfinished_episode`, an episode with `episode_finished=False` is still written and tagged as successful, but its TransferQueue `response_mask` and `loss_mask` are all zero so it does not contribute policy gradients, loss-normalization counts, or auxiliary losses.
 
 Masking stops at the loss. The trajectory keeps its reward in `rm_scores`, so a group-relative estimator such as GRPO or RLOO still folds that reward into the group mean and standard deviation, shifting the advantages of the sibling rollouts sharing its `uid`. The masked trajectory itself gets a zero advantage, and it still costs a full forward and backward pass. Treat unfinished episodes as evidence that keeps the baseline honest, not as samples removed from the batch.
 
-If no Runner reward is returned, an optional verl Reward Loop Worker can score the final trajectory. Without either source, `rm_scores` remains zero and the framework emits a warning.
+For Runners that always return a reward, the built-in
+`uni_agent.framework.task_runner.compute_score` scorer passes that reward and its
+metrics through the streaming Worker. Configure it through verl's existing
+`reward.custom_reward_function` interface. Custom scorers can instead combine
+the Runner payload with trajectory-dependent signals.
+
+Without streaming handles, a missing Runner reward leaves `rm_scores` at zero
+and the Framework logs this at info level. A TQ training reward pass does not
+receive `runner_reward_info`, so its scorer must operate on the regular posthoc
+reward inputs.
 
 Process rewards are not implemented by this interface. A future token-level
 reward channel must be a separate sibling of `reward_metrics`, because lists or
