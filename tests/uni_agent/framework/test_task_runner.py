@@ -6,6 +6,7 @@ from uni_agent.framework.task_runner import (
     _extract_upstream,
     _inject_gateway_tunnel,
     _rewrite_gateway_url,
+    compute_score,
     run_task,
 )
 from uni_agent.gateway.session import SessionHandle
@@ -113,9 +114,15 @@ def test_episode_result_rejects_non_scalar_metrics():
         EpisodeResult(metrics={"report": {"resolved": 1}})
 
 
-def test_episode_result_rejects_non_numeric_reward():
-    with pytest.raises(ValueError, match="reward must be a number or None"):
-        EpisodeResult(reward="1.0")  # type: ignore[arg-type]
+@pytest.mark.parametrize(("reward", "expected"), [(True, 1.0), ("0.5", 0.5)])
+def test_episode_result_normalizes_numeric_reward(reward, expected):
+    assert EpisodeResult(reward=reward).reward == expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("reward", ["not-a-number", float("inf")])
+def test_episode_result_rejects_invalid_reward(reward):
+    with pytest.raises(ValueError, match="finite number or numeric string"):
+        EpisodeResult(reward=reward)  # type: ignore[arg-type]
 
 
 def test_episode_result_rejects_reserved_reward_metric():
@@ -202,3 +209,18 @@ async def test_run_task_returns_episode_result(monkeypatch):
         episode_finished=False,
         reward_context={"report": {"resolved": 1}},
     )
+
+
+def test_compute_score_passes_through_runner_reward_info():
+    assert compute_score(
+        data_source="stub",
+        solution_str="unused",
+        ground_truth="unused",
+        extra_info={
+            "runner_reward_info": {
+                "reward": "0.5",
+                "metrics": {"acc": True, "format": 0.8},
+                "reward_context": {"trace": "unused by pass-through"},
+            }
+        },
+    ) == {"score": 0.5, "acc": True, "format": 0.8}

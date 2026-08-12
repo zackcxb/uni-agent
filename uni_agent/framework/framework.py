@@ -13,7 +13,6 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
-from typing import Protocol
 from uuid import uuid4
 
 import numpy as np
@@ -32,23 +31,11 @@ from verl.utils.import_utils import load_class_from_fqn
 from verl.utils.model import compute_position_id_with_mask
 from verl.utils.transferqueue_utils import tq
 
-from .base import AgentFramework, EpisodeResult
+from .base import AgentFramework
+from .contracts import EpisodeResult
 from .multi_modal_postprocess import compute_multi_modal_inputs, compute_position_ids
 
 logger = logging.getLogger(__name__)
-
-
-class AgentRunner(Protocol):
-    """Callable contract for an agent episode over a Gateway-owned session."""
-
-    async def __call__(
-        self,
-        *,
-        session: SessionHandle,
-        raw_prompt: object,
-        sample_index: int,
-        **sample_runner_kwargs: object,
-    ) -> EpisodeResult | None: ...
 
 
 TrajectoryPostprocessor = Callable[..., list[Trajectory] | Awaitable[list[Trajectory]]]
@@ -252,7 +239,7 @@ def _list_of_tq_fields_to_tensordict(fields: list[dict[str, object]]) -> TensorD
     return td
 
 
-def _trajectory_to_reward_dataproto(trajectory, sample_fields):
+def _trajectory_to_reward_dataproto(trajectory, sample_fields, episode_result: EpisodeResult):
     """Build a single-sample DataProto for RewardLoopWorker.compute_score.
 
     Field shape matches AgentLoopWorker._compute_score
@@ -282,12 +269,24 @@ def _trajectory_to_reward_dataproto(trajectory, sample_fields):
         "raw_prompt",
         "data_source",
         "reward_model",
-        "extra_info",
         "tools_kwargs",
         "agent_name",
     ):
         if key in sample_fields:
             non_tensor_batch[key] = np.array([sample_fields[key]], dtype=object)
+    non_tensor_batch["extra_info"] = np.array(
+        [
+            {
+                **dict(sample_fields.get("extra_info") or {}),
+                "runner_reward_info": {
+                    "reward": episode_result.reward,
+                    "metrics": dict(episode_result.metrics),
+                    "reward_context": dict(episode_result.reward_context),
+                },
+            }
+        ],
+        dtype=object,
+    )
     non_tensor_batch["__num_turns__"] = np.array([trajectory.num_turns])
 
     return DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
@@ -299,10 +298,9 @@ class GatewayAgentFramework(AgentFramework):
     Each sample in the batch is run as an independent Gateway session: the agent
     communicates through the Gateway's provider adapter (OpenAI Chat Completions
     or Anthropic Messages), and the Gateway collects token-level trajectories. After
-    finalization, scoring prefers the reward returned by the managed runner;
-    otherwise, if a RewardLoopWorker is configured,
-    ``_score_trajectories`` scores the final trajectory and broadcasts the score to all
-    trajectories in the session (matching ``AgentLoopWorkerTQ._agent_loop_postprocess``).
+    finalization, an available RewardLoopWorker processes the managed runner's
+    reward information and owns the final score. Without streaming worker
+    handles, the runner reward is retained as the non-streaming fallback.
     The framework then writes them to the TransferQueue schema consumed by sync training.
     """
 
@@ -334,6 +332,8 @@ class GatewayAgentFramework(AgentFramework):
             if runner_config.dispatch_mode == "inline_async"
         }
         self.reward_loop_worker_handles = list(reward_loop_worker_handles) if reward_loop_worker_handles else None
+        if self.reward_loop_worker_handles is None:
+            logger.info("No streaming reward worker handles; using the non-streaming reward path")
         self._processor = processor
         self._rollout_config = rollout_config
         self._runner_semaphores: dict[str, asyncio.Semaphore] = {}
@@ -367,9 +367,6 @@ class GatewayAgentFramework(AgentFramework):
             log_dir = str(configured_log_dir) if configured_log_dir else None
         else:
             log_dir = os.environ.get("UNI_AGENT_LOG_DIR") or "/tmp/uni_agent_logs"
-
-        if not bool(af_cfg.get("use_reward_loop_worker", True)):
-            reward_loop_worker_handles = None
 
         mask_unfinished_episode = af_cfg.get("mask_unfinished_episode", False)
         if type(mask_unfinished_episode) is not bool:
@@ -840,22 +837,22 @@ class GatewayAgentFramework(AgentFramework):
                 )
                 return session_trajectories, sample_fields
 
-            if episode_result.reward is None:
-                annotations = None
-                reward_source = None
-            else:
-                annotations = [(float(episode_result.reward), {}) for _ in session_trajectories]
-                reward_source = "agent_runner"
-            if annotations is None and self.reward_loop_worker_handles:
+            if self.reward_loop_worker_handles:
                 annotations = await self._score_trajectories(
                     session_trajectories,
                     sample_fields,
-                    episode_result.reward_context,
+                    episode_result,
                 )
                 reward_source = "reward_loop_worker"
+            elif episode_result.reward is not None:
+                annotations = [(episode_result.reward, {}) for _ in session_trajectories]
+                reward_source = "agent_runner"
+            else:
+                annotations = None
+                reward_source = None
 
             if annotations is None:
-                logger.warning("session %s: no reward available; rm_scores=0 for this sample", session_id)
+                logger.info("session %s: Framework produced no reward; rm_scores remain zero", session_id)
                 result_trajectories = [
                     replace(
                         traj,
@@ -871,7 +868,7 @@ class GatewayAgentFramework(AgentFramework):
                         traj,
                         episode_finished=episode_result.episode_finished,
                         reward_score=score,
-                        reward_metrics={**episode_result.metrics, **extra},
+                        reward_metrics=extra if reward_source == "reward_loop_worker" else dict(episode_result.metrics),
                     )
                     for traj, (score, extra) in zip(session_trajectories, annotations, strict=True)
                 ]
@@ -997,28 +994,23 @@ class GatewayAgentFramework(AgentFramework):
         self,
         session_trajectories: list[Trajectory],
         sample_fields: dict[str, object],
-        reward_context: dict[str, object] | None = None,
+        episode_result: EpisodeResult,
     ) -> list[tuple[float, dict[str, object]]]:
         """Score the session's final trajectory and broadcast (score, extra_info) to all.
 
         Mirrors AgentLoopWorkerTQ._agent_loop_postprocess
         (verl/trainer/main_ppo_sync.py:353-396): only the final trajectory (the
-        session's last interaction segment) is dispatched to RewardLoopWorker;
-        its score + reward_extra_info are then broadcast to every trajectory in
-        the session. Subclasses can override this method to implement custom
-        session-to-trajectory scoring policies.
+        session's last interaction segment) is dispatched to RewardLoopWorker.
+        The runner payload is available under ``extra_info.runner_reward_info``;
+        the Worker's score + reward_extra_info are then broadcast to every
+        trajectory in the session. Subclasses can override this method to
+        implement custom session-to-trajectory scoring policies.
         """
         assert self.reward_loop_worker_handles is not None
         assert session_trajectories, "expected non-empty session_trajectories"
 
         final_trajectory = session_trajectories[-1]
-        scoring_sample_fields = dict(sample_fields)
-        if reward_context:
-            scoring_sample_fields["extra_info"] = {
-                **dict(sample_fields.get("extra_info") or {}),
-                **reward_context,
-            }
-        data = _trajectory_to_reward_dataproto(final_trajectory, scoring_sample_fields)
+        data = _trajectory_to_reward_dataproto(final_trajectory, sample_fields, episode_result)
         worker = random.choice(self.reward_loop_worker_handles)
         result = await worker.compute_score.remote(data)
 
@@ -1027,6 +1019,8 @@ class GatewayAgentFramework(AgentFramework):
                 f"RewardLoopWorker result missing 'reward_score' key or invalid for uid={sample_fields.get('uid')}"
             )
         score = float(result["reward_score"])
+        if not np.isfinite(score):
+            raise ValueError("RewardLoopWorker reward_score must be finite")
         extra = result.get("reward_extra_info")
         if extra is None:
             extra = {}

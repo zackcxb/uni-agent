@@ -516,54 +516,14 @@ async def test_framework_rejects_legacy_runner_result():
 
 
 @pytest.mark.asyncio
-async def test_runner_reward_bypasses_reward_loop_worker():
-    class _UnexpectedRemote:
-        def __init__(self):
-            self.calls = 0
-
-        async def remote(self, data):
-            self.calls += 1
-            raise AssertionError("worker must not run when the runner returned a reward")
-
-    class _Worker:
-        def __init__(self):
-            self.compute_score = _UnexpectedRemote()
-
-    async def result_runner(**kwargs):
-        return EpisodeResult(reward=0.5, metrics={"acc": 1.0}, episode_finished=True)
-
-    worker = _Worker()
-    runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(result_runner)},
-        gateway_manager=runtime,
-        reward_loop_worker_handles=[worker],
-    )
-
-    trajectories, _ = await framework._run_session(
-        sample_fields={"raw_prompt": [], "uid": "uid-0"},
-        sample_index=0,
-        session_index=0,
-        global_steps=7,
-        runner_name="runner",
-        runner_config=framework.runner_registry["runner"],
-        sampling_params={},
-    )
-
-    assert worker.compute_score.calls == 0
-    assert trajectories[0].reward_score == 0.5
-    assert trajectories[0].reward_metrics == {"acc": 1.0}
-
-
-@pytest.mark.asyncio
-async def test_reward_worker_receives_context_and_overrides_runner_metric():
+async def test_reward_worker_processes_runner_reward_info_and_owns_final_metrics():
     class _ComputeScoreRemote:
         def __init__(self):
             self.calls = []
 
         async def remote(self, data):
             self.calls.append(data)
-            return {"reward_score": 0.42, "reward_extra_info": {"acc": 1.0, "format": 0.8}}
+            return {"reward_score": 0.42, "reward_extra_info": {"acc": 0.25, "format": 0.8}}
 
     class _Worker:
         def __init__(self):
@@ -571,8 +531,8 @@ async def test_reward_worker_receives_context_and_overrides_runner_metric():
 
     async def result_runner(**kwargs):
         return EpisodeResult(
-            reward=None,
-            metrics={"acc": 0.0},
+            reward=0.5,
+            metrics={"acc": 1.0},
             episode_finished=True,
             reward_context={"case_id": "case-1"},
         )
@@ -595,9 +555,18 @@ async def test_reward_worker_receives_context_and_overrides_runner_metric():
         sampling_params={},
     )
 
-    assert worker.compute_score.calls[0].non_tensor_batch["extra_info"].tolist() == [{"index": 3, "case_id": "case-1"}]
+    assert worker.compute_score.calls[0].non_tensor_batch["extra_info"].tolist() == [
+        {
+            "index": 3,
+            "runner_reward_info": {
+                "reward": 0.5,
+                "metrics": {"acc": 1.0},
+                "reward_context": {"case_id": "case-1"},
+            },
+        }
+    ]
     assert trajectories[0].reward_score == 0.42
-    assert trajectories[0].reward_metrics == {"acc": 1.0, "format": 0.8}
+    assert trajectories[0].reward_metrics == {"acc": 0.25, "format": 0.8}
 
 
 @pytest.mark.asyncio
@@ -629,6 +598,34 @@ async def test_reward_worker_rejects_invalid_metrics(reward_extra_info, error_ma
     )
 
     with pytest.raises(ValueError, match=error_match):
+        await framework._run_session(
+            sample_fields={"raw_prompt": [], "uid": "uid-0"},
+            sample_index=0,
+            session_index=0,
+            global_steps=7,
+            runner_name="runner",
+            runner_config=framework.runner_registry["runner"],
+            sampling_params={},
+        )
+
+
+@pytest.mark.asyncio
+async def test_reward_worker_rejects_non_finite_score():
+    class _ComputeScoreRemote:
+        async def remote(self, data):
+            return {"reward_score": "nan"}
+
+    class _Worker:
+        compute_score = _ComputeScoreRemote()
+
+    runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
+    framework = await _build_framework_with_agent_runners(
+        agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
+        gateway_manager=runtime,
+        reward_loop_worker_handles=[_Worker()],
+    )
+
+    with pytest.raises(ValueError, match="reward_score must be finite"):
         await framework._run_session(
             sample_fields={"raw_prompt": [], "uid": "uid-0"},
             sample_index=0,
@@ -858,7 +855,7 @@ async def test_generate_sequences_writes_tq_schema_for_each_session(monkeypatch,
     )
 
     # Nonzero score proves reward_score lands on the final response token.
-    async def fake_score(self, trajectories, sample_fields, reward_context=None):
+    async def fake_score(self, trajectories, sample_fields, episode_result):
         score = float(sample_fields["extra_info"]["index"] + 0.25)
         return [(score, {})] * len(trajectories)
 
@@ -1522,7 +1519,11 @@ async def test_score_trajectories_dispatches_only_final_trajectory():
     annotations = await framework._score_trajectories(
         trajectories,
         sample_fields,
-        {"reward_score": 0.9, "index": "from-reward-context"},
+        EpisodeResult(
+            reward=0.9,
+            metrics={"acc": 1.0},
+            reward_context={"index": "from-reward-context"},
+        ),
     )
 
     assert len(worker.compute_score.calls) == 1
@@ -1535,7 +1536,15 @@ async def test_score_trajectories_dispatches_only_final_trajectory():
     assert data.non_tensor_batch["raw_prompt"].tolist() == [[{"role": "user", "content": "hi"}]]
     assert data.non_tensor_batch["reward_model"].tolist() == [{"ground_truth": "answer"}]
     assert data.non_tensor_batch["extra_info"].tolist() == [
-        {"index": "from-reward-context", "case_id": "case-1", "reward_score": 0.9}
+        {
+            "index": "from-sample",
+            "case_id": "case-1",
+            "runner_reward_info": {
+                "reward": 0.9,
+                "metrics": {"acc": 1.0},
+                "reward_context": {"index": "from-reward-context"},
+            },
+        }
     ]
     assert data.non_tensor_batch["tools_kwargs"].tolist() == [{"tool": "search"}]
     assert data.non_tensor_batch["agent_name"].tolist() == ["deepeyes"]

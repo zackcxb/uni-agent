@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from uni_agent.rlinsight_adapter import task_span
-from uni_agent.framework.base import EpisodeResult
+from uni_agent.framework.contracts import EpisodeResult
 from uni_agent.tasks import TaskConfigResolver, get_task
 from uni_agent.tasks.config import _deep_merge
 
@@ -74,6 +74,18 @@ def _inject_gateway_tunnel(task: dict[str, Any], base_url: str) -> dict[str, Any
             "agent": {"model": {"base_url": _rewrite_gateway_url(base_url, proxy_port)}},
         },
     )
+
+
+def compute_score(
+    *,
+    data_source: str,
+    solution_str: str,
+    ground_truth: object,
+    extra_info: dict[str, Any],
+) -> dict[str, int | float | bool]:
+    """Pass the managed runner's reward payload through a RewardLoopWorker."""
+    runner_reward_info = extra_info["runner_reward_info"]
+    return {"score": float(runner_reward_info["reward"]), **runner_reward_info["metrics"]}
 
 
 async def run_task(
