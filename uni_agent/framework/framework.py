@@ -845,6 +845,8 @@ class GatewayAgentFramework(AgentFramework):
                 )
                 reward_source = "reward_loop_worker"
             elif episode_result.reward is not None:
+                # Preserve Runner rewards outside streaming scoring; TQ training replaces
+                # these rm_scores during its colocated post-rollout reward pass.
                 annotations = [(episode_result.reward, {}) for _ in session_trajectories]
                 reward_source = "agent_runner"
             else:
