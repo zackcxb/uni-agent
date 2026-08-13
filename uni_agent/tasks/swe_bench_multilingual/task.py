@@ -68,7 +68,7 @@ class SWEBenchMultilingualTask(Task):
                 if apply_result.exit_code != 0:
                     error = apply_result.stderr.strip() or apply_result.stdout.strip()
                     raise RuntimeError(f"failed to apply gold patch for {instance_id}: {error}")
-                finished = True
+                episode_finished = True
             else:
                 agent = self.build_agent()
                 agent_result = await agent.run(
@@ -76,7 +76,7 @@ class SWEBenchMultilingualTask(Task):
                     messages=cfg.prompt,
                     workdir="/testbed",
                 )
-                finished = agent_result.finished
+                episode_finished = agent_result.episode_finished
 
             try:
                 from .reward import compute_reward
@@ -94,6 +94,6 @@ class SWEBenchMultilingualTask(Task):
             return TaskResult(
                 reward=float(result["resolved"]),
                 accuracy=float(result["resolved"]),
-                finished=finished,
+                episode_finished=episode_finished,
                 extra_info=result,
             )

@@ -166,7 +166,13 @@ How the Agent Framework consumes the result depends on the reward topology:
 - With streaming Reward Loop Worker handles, the Worker always processes the finalized trajectory, even when the Runner returned a reward. The Framework exposes the Runner result under `extra_info["runner_reward_info"]`; the Worker owns the final reward and validation metrics.
 - Without streaming handles, the Framework retains the Runner reward and metrics and writes a sparse token-level `rm_scores` tensor with the reward on the final token. This is the final result for standalone/inference. TQ training subsequently runs its colocated reward pass and replaces `rm_scores`.
 
+The colocated TQ pass currently replaces only `rm_scores`; validation continues
+to read the Runner metrics already stored under
+`extra_fields["reward_extra_info"]`. Use streaming handles when Worker-produced
+validation metrics must be the canonical output.
+
 Validation metrics are serialized under `extra_fields["reward_extra_info"]`, matching the trainer's TQ contract.
+Custom validation scorers should return a stable metric-key set across samples; downstream aggregation may fail when only some samples omit a key.
 
 The result fields have separate contracts:
 

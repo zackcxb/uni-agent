@@ -10,7 +10,12 @@ if TYPE_CHECKING:
 
 @dataclass
 class EpisodeResult:
-    """Typed annotations returned by a managed Agent Runner."""
+    """Framework-level outcome returned by one managed Runner episode.
+
+    Unlike :class:`uni_agent.agents.AgentResult`, which contains an Agent's raw
+    execution artifacts, this contract carries the normalized reward annotations
+    consumed by the Agent Framework.
+    """
 
     reward: float | None = None
     metrics: dict[str, int | float | bool] = field(default_factory=dict)
@@ -42,7 +47,7 @@ class EpisodeResult:
 
 
 class AgentRunner(Protocol):
-    """Callable contract for OpenAI-compatible agent runners."""
+    """Callable that executes one episode against a Framework-owned Gateway session."""
 
     async def __call__(
         self,

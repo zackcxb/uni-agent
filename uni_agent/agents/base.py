@@ -74,6 +74,9 @@ class AgentConfig(BaseModel):
 class AgentResult:
     """Artifacts one Agent produced for an episode.
 
+    Reward annotations belong to the Framework's ``EpisodeResult`` contract,
+    not this Agent-layer result.
+
     ``episode_finished`` is tri-state: ``True``/``False`` report a known
     completion state, and ``None`` means the Agent does not track one. Opting
     out never silently marks an episode untrainable.
