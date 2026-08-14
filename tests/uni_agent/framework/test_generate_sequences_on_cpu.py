@@ -10,9 +10,9 @@ import pytest
 import torch
 
 from tests.uni_agent.support import logging_runner
-from uni_agent.framework import EpisodeResult
 from uni_agent.framework.framework import GatewayAgentFramework, _align_routed_experts
 from uni_agent.gateway.session import SessionHandle, Trajectory
+from uni_agent.tasks import TaskResult
 from verl.utils import tensordict_utils as tu
 
 _RUNNER_CALLS = []
@@ -58,6 +58,7 @@ async def _config_recording_runner(*, raw_prompt, session, sample_index, marker=
             "kwargs": dict(kwargs),
         }
     )
+    return TaskResult()
 
 
 class _ConfigRecordingClassRunner:
@@ -75,10 +76,11 @@ class _ConfigRecordingClassRunner:
                 "kwargs": {**dict(kwargs), "tools_kwargs": tools_kwargs},
             }
         )
+        return TaskResult()
 
 
 async def _async_noop_runner(**kwargs):
-    return None
+    return TaskResult()
 
 
 async def _inline_runner_proxy(*, runner_key, **kwargs):
@@ -104,9 +106,9 @@ def _inline_runner_config(
     return config
 
 
-async def _build_framework_with_agent_runners(
+async def _build_framework_with_task_runners(
     *,
-    agent_runners: dict[str, dict[str, object]],
+    task_runners: dict[str, dict[str, object]],
     gateway_manager,
     reward_loop_worker_handles=None,
     n: int = 1,
@@ -119,7 +121,7 @@ async def _build_framework_with_agent_runners(
     from omegaconf import OmegaConf
 
     agent_framework_cfg: dict[str, object] = {
-        "agent_runners": agent_runners,
+        "task_runners": task_runners,
         "mask_unfinished_episode": mask_unfinished_episode,
     }
     if log_dir is not None:
@@ -380,7 +382,7 @@ def _install_fake_score(monkeypatch, *, score_from_sample_fields=None, default_s
 @pytest.mark.cpu
 @pytest.mark.level0
 @pytest.mark.asyncio
-async def test_agent_runners_registry_materializes_runners_and_selects_by_agent_name(fake_tq):
+async def test_task_runners_registry_materializes_runners_and_selects_by_agent_name(fake_tq):
     """Function and class runners keep per-runner kwargs, and each prompt's
     ``agent_name`` selects the matching runner without leaking internals."""
     runtime = _FakeGatewayManager(
@@ -397,8 +399,8 @@ async def test_agent_runners_registry_materializes_runners_and_selects_by_agent_
         non_tensor_dict={},
     )["agent_name"]
 
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={
+    framework = await _build_framework_with_task_runners(
+        task_runners={
             "deepeyes": {
                 "runner_fqn": runner_fqn,
                 "runner_kwargs": {"marker": "deepeyes"},
@@ -434,18 +436,18 @@ async def test_agent_runners_registry_materializes_runners_and_selects_by_agent_
 @pytest.mark.cpu
 @pytest.mark.level0
 @pytest.mark.asyncio
-async def test_framework_applies_managed_runner_episode_result():
+async def test_framework_applies_managed_runner_task_result():
     async def result_runner(**kwargs):
-        return EpisodeResult(
+        return TaskResult(
             reward=0.5,
-            metrics={"acc": 1.0},
+            accuracy=1.0,
             episode_finished=False,
-            reward_context={"case_id": "case-1"},
+            extra_info={"case_id": "case-1"},
         )
 
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(result_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(result_runner)},
         gateway_manager=runtime,
     )
 
@@ -455,7 +457,7 @@ async def test_framework_applies_managed_runner_episode_result():
         session_index=0,
         global_steps=7,
         runner_name="runner",
-        runner_config=framework.runner_registry["runner"],
+        runner_config=framework.task_runner_registry["runner"],
         sampling_params={},
     )
 
@@ -465,10 +467,10 @@ async def test_framework_applies_managed_runner_episode_result():
 
 
 @pytest.mark.asyncio
-async def test_ray_task_runner_returns_episode_result():
+async def test_ray_task_runner_returns_task_result():
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={
+    framework = await _build_framework_with_task_runners(
+        task_runners={
             "runner": {
                 "runner_fqn": "tests.uni_agent.support.typed_result_runner",
                 "dispatch_mode": "ray_task",
@@ -483,7 +485,7 @@ async def test_ray_task_runner_returns_episode_result():
         session_index=0,
         global_steps=7,
         runner_name="runner",
-        runner_config=framework.runner_registry["runner"],
+        runner_config=framework.task_runner_registry["runner"],
         sampling_params={},
     )
 
@@ -498,19 +500,42 @@ async def test_framework_rejects_legacy_runner_result():
         return {"reward": 0.5, "finished": True}
 
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(legacy_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(legacy_runner)},
         gateway_manager=runtime,
     )
 
-    with pytest.raises(TypeError, match="EpisodeResult or None"):
+    with pytest.raises(TypeError, match="must return TaskResult"):
         await framework._run_session(
             sample_fields={"raw_prompt": [], "uid": "uid-0"},
             sample_index=0,
             session_index=0,
             global_steps=7,
             runner_name="runner",
-            runner_config=framework.runner_registry["runner"],
+            runner_config=framework.task_runner_registry["runner"],
+            sampling_params={},
+        )
+
+
+@pytest.mark.asyncio
+async def test_framework_rejects_missing_task_runner_result():
+    async def missing_result_runner(**kwargs):
+        return None
+
+    runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(missing_result_runner)},
+        gateway_manager=runtime,
+    )
+
+    with pytest.raises(TypeError, match="Task runner 'runner' must return TaskResult"):
+        await framework._run_session(
+            sample_fields={"raw_prompt": [], "uid": "uid-0"},
+            sample_index=0,
+            session_index=0,
+            global_steps=7,
+            runner_name="runner",
+            runner_config=framework.task_runner_registry["runner"],
             sampling_params={},
         )
 
@@ -530,17 +555,17 @@ async def test_reward_worker_processes_runner_reward_info_and_owns_final_metrics
             self.compute_score = _ComputeScoreRemote()
 
     async def result_runner(**kwargs):
-        return EpisodeResult(
+        return TaskResult(
             reward=0.5,
-            metrics={"acc": 1.0},
+            accuracy=1.0,
             episode_finished=True,
-            reward_context={"case_id": "case-1"},
+            extra_info={"case_id": "case-1"},
         )
 
     worker = _Worker()
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(result_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(result_runner)},
         gateway_manager=runtime,
         reward_loop_worker_handles=[worker],
     )
@@ -551,7 +576,7 @@ async def test_reward_worker_processes_runner_reward_info_and_owns_final_metrics
         session_index=0,
         global_steps=7,
         runner_name="runner",
-        runner_config=framework.runner_registry["runner"],
+        runner_config=framework.task_runner_registry["runner"],
         sampling_params={},
     )
 
@@ -588,11 +613,11 @@ async def test_reward_worker_rejects_invalid_metrics(reward_extra_info, error_ma
         compute_score = _ComputeScoreRemote()
 
     async def result_runner(**kwargs):
-        return EpisodeResult()
+        return TaskResult()
 
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(result_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(result_runner)},
         gateway_manager=runtime,
         reward_loop_worker_handles=[_Worker()],
     )
@@ -604,7 +629,7 @@ async def test_reward_worker_rejects_invalid_metrics(reward_extra_info, error_ma
             session_index=0,
             global_steps=7,
             runner_name="runner",
-            runner_config=framework.runner_registry["runner"],
+            runner_config=framework.task_runner_registry["runner"],
             sampling_params={},
         )
 
@@ -619,8 +644,8 @@ async def test_reward_worker_rejects_non_finite_score():
         compute_score = _ComputeScoreRemote()
 
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(_async_noop_runner)},
         gateway_manager=runtime,
         reward_loop_worker_handles=[_Worker()],
     )
@@ -632,7 +657,7 @@ async def test_reward_worker_rejects_non_finite_score():
             session_index=0,
             global_steps=7,
             runner_name="runner",
-            runner_config=framework.runner_registry["runner"],
+            runner_config=framework.task_runner_registry["runner"],
             sampling_params={},
         )
 
@@ -640,11 +665,11 @@ async def test_reward_worker_rejects_non_finite_score():
 @pytest.mark.asyncio
 async def test_metrics_survive_without_any_reward_source():
     async def result_runner(**kwargs):
-        return EpisodeResult(reward=None, metrics={"acc": 1.0}, episode_finished=None)
+        return TaskResult(reward=None, accuracy=1.0, episode_finished=None)
 
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(result_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(result_runner)},
         gateway_manager=runtime,
     )
 
@@ -654,7 +679,7 @@ async def test_metrics_survive_without_any_reward_source():
         session_index=0,
         global_steps=7,
         runner_name="runner",
-        runner_config=framework.runner_registry["runner"],
+        runner_config=framework.task_runner_registry["runner"],
         sampling_params={},
     )
 
@@ -674,8 +699,8 @@ async def test_framework_and_runner_logs_share_one_session_directory(tmp_path, f
             "dispatch_mode": "ray_task",
         }
     )
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": runner_config},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": runner_config},
         gateway_manager=runtime,
         log_dir=str(tmp_path),
     )
@@ -709,8 +734,8 @@ async def test_framework_and_runner_logs_share_one_session_directory(tmp_path, f
 @pytest.mark.asyncio
 async def test_validation_logs_omit_global_step_directory(tmp_path, fake_tq):
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(logging_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(logging_runner)},
         gateway_manager=runtime,
         log_dir=str(tmp_path),
     )
@@ -733,8 +758,8 @@ async def test_validation_logs_omit_global_step_directory(tmp_path, fake_tq):
 @pytest.mark.asyncio
 async def test_validation_logs_keep_provided_global_step(tmp_path, fake_tq):
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(_async_noop_runner)},
         gateway_manager=runtime,
         log_dir=str(tmp_path),
     )
@@ -755,8 +780,8 @@ async def test_validation_logs_keep_provided_global_step(tmp_path, fake_tq):
 @pytest.mark.level0
 @pytest.mark.asyncio
 async def test_training_requires_global_steps(fake_tq):
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(_async_noop_runner)},
         gateway_manager=_FakeGatewayManager({}),
     )
 
@@ -812,8 +837,8 @@ async def test_framework_binds_sampling_defaults_to_gateway_sessions(
     expected_sampling_params,
 ):
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(_async_noop_runner)},
         gateway_manager=runtime,
     )
 
@@ -855,14 +880,14 @@ async def test_generate_sequences_writes_tq_schema_for_each_session(monkeypatch,
     )
 
     # Nonzero score proves reward_score lands on the final response token.
-    async def fake_score(self, trajectories, sample_fields, episode_result):
+    async def fake_score(self, trajectories, sample_fields, task_result):
         score = float(sample_fields["extra_info"]["index"] + 0.25)
         return [(score, {})] * len(trajectories)
 
-    monkeypatch.setattr(OpenAICompatibleAgentFramework, "_score_trajectories", fake_score)
+    monkeypatch.setattr(GatewayAgentFramework, "_score_trajectories", fake_score)
 
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(_async_noop_runner)},
         gateway_manager=runtime,
         reward_loop_worker_handles=["sentinel"],
         n=2,
@@ -944,7 +969,7 @@ async def test_generate_sequences_writes_tq_schema_for_each_session(monkeypatch,
 @pytest.mark.asyncio
 async def test_generate_sequences_masks_unfinished_trajectory_without_dropping_it(fake_tq):
     async def unfinished_runner(**kwargs):
-        return EpisodeResult(reward=0.5, episode_finished=False)
+        return TaskResult(reward=0.5, episode_finished=False)
 
     runtime = _FakeGatewayManager(
         {
@@ -960,8 +985,8 @@ async def test_generate_sequences_masks_unfinished_trajectory_without_dropping_i
             ]
         }
     )
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(unfinished_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(unfinished_runner)},
         gateway_manager=runtime,
         mask_unfinished_episode=True,
     )
@@ -985,7 +1010,7 @@ async def test_generate_sequences_masks_unfinished_trajectory_without_dropping_i
 @pytest.mark.asyncio
 async def test_unfinished_trajectory_remains_trainable_when_masking_is_disabled(fake_tq):
     async def unfinished_runner(**kwargs):
-        return EpisodeResult(reward=0.5, episode_finished=False)
+        return TaskResult(reward=0.5, episode_finished=False)
 
     runtime = _FakeGatewayManager(
         {
@@ -997,8 +1022,8 @@ async def test_unfinished_trajectory_remains_trainable_when_masking_is_disabled(
             ]
         }
     )
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(unfinished_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(unfinished_runner)},
         gateway_manager=runtime,
     )
 
@@ -1016,7 +1041,7 @@ async def test_unfinished_trajectory_remains_trainable_when_masking_is_disabled(
 @pytest.mark.asyncio
 async def test_masking_keeps_trajectory_trainable_when_completion_metadata_is_missing(fake_tq):
     async def unknown_completion_runner(**kwargs):
-        return EpisodeResult(reward=0.5, episode_finished=None)
+        return TaskResult(reward=0.5, episode_finished=None)
 
     runtime = _FakeGatewayManager(
         {
@@ -1028,8 +1053,8 @@ async def test_masking_keeps_trajectory_trainable_when_completion_metadata_is_mi
             ]
         }
     )
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(unknown_completion_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(unknown_completion_runner)},
         gateway_manager=runtime,
         mask_unfinished_episode=True,
     )
@@ -1048,7 +1073,7 @@ async def test_generate_sequences_reports_unfinished_episode_count(fake_tq, capl
     # A session materializing two trajectories is still one episode: completion is
     # session-level metadata copied onto every trajectory it produced.
     async def unfinished_runner(**kwargs):
-        return EpisodeResult(reward=0.5, episode_finished=False)
+        return TaskResult(reward=0.5, episode_finished=False)
 
     runtime = _FakeGatewayManager(
         {
@@ -1058,8 +1083,8 @@ async def test_generate_sequences_reports_unfinished_episode_count(fake_tq, capl
             ]
         }
     )
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(unfinished_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(unfinished_runner)},
         gateway_manager=runtime,
         mask_unfinished_episode=True,
     )
@@ -1076,11 +1101,11 @@ async def test_generate_sequences_reports_unfinished_episode_count(fake_tq, capl
 @pytest.mark.asyncio
 async def test_tq_nests_acc_under_reward_extra_info(fake_tq):
     async def scored_runner(**kwargs):
-        return EpisodeResult(reward=0.5, metrics={"acc": 1.0}, episode_finished=True)
+        return TaskResult(reward=0.5, accuracy=1.0, episode_finished=True)
 
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(scored_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(scored_runner)},
         gateway_manager=runtime,
     )
 
@@ -1096,8 +1121,8 @@ async def test_tq_nests_acc_under_reward_extra_info(fake_tq):
 @pytest.mark.asyncio
 async def test_framework_rejects_non_boolean_masking_config():
     with pytest.raises(ValueError, match="mask_unfinished_episode must be a bool"):
-        await _build_framework_with_agent_runners(
-            agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
+        await _build_framework_with_task_runners(
+            task_runners={"runner": _inline_runner_config(_async_noop_runner)},
             gateway_manager=_FakeGatewayManager({}),
             mask_unfinished_episode="true",  # type: ignore[arg-type]
         )
@@ -1129,8 +1154,8 @@ async def test_generate_sequences_batches_length_trajectory_before_normal_trajec
             ]
         }
     )
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(_async_noop_runner)},
         gateway_manager=runtime,
     )
 
@@ -1166,8 +1191,8 @@ async def test_generate_sequences_selects_longest_model_token_trajectory(fake_tq
             ]
         }
     )
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={
+    framework = await _build_framework_with_task_runners(
+        task_runners={
             "runner": _inline_runner_config(
                 _async_noop_runner,
                 trajectory_selection="longest",
@@ -1191,8 +1216,8 @@ async def test_generate_sequences_selects_longest_model_token_trajectory(fake_tq
 @pytest.mark.asyncio
 async def test_framework_rejects_unknown_trajectory_selection(fake_tq):
     with pytest.raises(ValueError, match="Unknown trajectory selection"):
-        await _build_framework_with_agent_runners(
-            agent_runners={
+        await _build_framework_with_task_runners(
+            task_runners={
                 "runner": _inline_runner_config(
                     _async_noop_runner,
                     trajectory_selection="shortest",
@@ -1358,12 +1383,13 @@ async def test_generate_sequences_keeps_successful_sessions_when_one_session_fai
         }
     )
 
-    async def agent_runner(*, raw_prompt, session, sample_index, tools_kwargs, **kwargs):
+    async def task_runner(*, raw_prompt, session, sample_index, tools_kwargs, **kwargs):
         if session.session_id.startswith("session-sample-0-rollout-1-"):
             raise RuntimeError("gateway failed once")
+        return TaskResult()
 
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(agent_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(task_runner)},
         gateway_manager=runtime,
         n=2,
         val_n=2,
@@ -1389,8 +1415,8 @@ async def test_generate_sequences_marks_prompt_failure_when_all_sessions_fail(fa
         }
     )
 
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(_async_noop_runner)},
         gateway_manager=runtime,
         trajectory_postprocessor_fqn=f"{__name__}._empty_trajectory_postprocessor",
         n=1,
@@ -1411,8 +1437,8 @@ async def test_generate_sequences_omits_missing_rollout_log_probs(fake_tq):
     """Missing backend logprobs are omitted while reward scores remain zero-filled."""
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory(response_logprobs=None)]})
 
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(_async_noop_runner)},
         gateway_manager=runtime,
         n=1,
         val_n=1,
@@ -1437,12 +1463,13 @@ async def test_generate_sequences_keeps_other_prompts_when_one_prompt_fails(fake
         }
     )
 
-    async def agent_runner(*, sample_index, **kwargs):
+    async def task_runner(*, sample_index, **kwargs):
         if sample_index == 0:
             raise RuntimeError("prompt 0 exploded")
+        return TaskResult()
 
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(agent_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(task_runner)},
         gateway_manager=runtime,
         n=1,
         val_n=1,
@@ -1490,8 +1517,8 @@ async def test_score_trajectories_dispatches_only_final_trajectory():
 
     worker = _StubWorker()
 
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
+    framework = await _build_framework_with_task_runners(
+        task_runners={"runner": _inline_runner_config(_async_noop_runner)},
         gateway_manager=_FakeGatewayManager({}),
         reward_loop_worker_handles=[worker],
         n=1,
@@ -1511,7 +1538,6 @@ async def test_score_trajectories_dispatches_only_final_trajectory():
     sample_fields = {
         "data_source": "test",
         "raw_prompt": [{"role": "user", "content": "hi"}],
-        "reward_model": {"ground_truth": "answer"},
         "extra_info": {"index": "from-sample", "case_id": "case-1"},
         "tools_kwargs": {"tool": "search"},
         "agent_name": "deepeyes",
@@ -1519,10 +1545,10 @@ async def test_score_trajectories_dispatches_only_final_trajectory():
     annotations = await framework._score_trajectories(
         trajectories,
         sample_fields,
-        EpisodeResult(
+        TaskResult(
             reward=0.9,
-            metrics={"acc": 1.0},
-            reward_context={"index": "from-reward-context"},
+            accuracy=1.0,
+            extra_info={"index": "from-reward-context"},
         ),
     )
 
@@ -1534,7 +1560,7 @@ async def test_score_trajectories_dispatches_only_final_trajectory():
     assert data.batch["attention_mask"].tolist() == [[1, 1, 1, 1]]
     assert data.non_tensor_batch["data_source"].tolist() == ["test"]
     assert data.non_tensor_batch["raw_prompt"].tolist() == [[{"role": "user", "content": "hi"}]]
-    assert data.non_tensor_batch["reward_model"].tolist() == [{"ground_truth": "answer"}]
+    assert data.non_tensor_batch["reward_model"].tolist() == [{"ground_truth": None}]
     assert data.non_tensor_batch["extra_info"].tolist() == [
         {
             "index": "from-sample",

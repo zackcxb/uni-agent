@@ -33,11 +33,11 @@ For each rollout session, the Agent Framework:
 
 1. Chooses a Gateway actor and creates a session.
 2. Receives a session-scoped model `base_url`.
-3. Launches the configured Agent Runner, such as `run_task`.
+3. Launches the configured Task Runner, such as `run_task`.
 4. The runner injects the session endpoint into `agent.model`.
 5. The Agent sends OpenAI Chat Completions or Anthropic Messages requests to the session URL.
 6. The Gateway forwards tokenized requests to the verl rollout engine.
-7. The managed Runner returns an `EpisodeResult` to the Framework.
+7. The managed Task Runner returns a `TaskResult` to the Framework.
 8. The Framework finalizes the session, attaches reward/status/metrics, and writes trajectories to TransferQueue.
 
 The model-facing endpoints are:
@@ -153,21 +153,21 @@ by default and can be disabled with
 The built-in Task Runner returns:
 
 ```python
-EpisodeResult(
+TaskResult(
     reward=1.0,
-    metrics={"acc": 1.0},
+    accuracy=1.0,
     episode_finished=True,
-    reward_context={...},
+    extra_info={...},
 )
 ```
 
 How the Agent Framework consumes the result depends on the reward topology:
 
 - With streaming Reward Loop Worker handles, the Worker always processes the finalized trajectory, even when the Runner returned a reward. The Framework exposes the Runner result under `extra_info["runner_reward_info"]`; the Worker owns the final reward and validation metrics.
-- Without streaming handles, the Framework retains the Runner reward and metrics and writes a sparse token-level `rm_scores` tensor with the reward on the final token. This is the final result for standalone/inference. TQ training subsequently runs its colocated reward pass and replaces `rm_scores`.
+- Without streaming handles, the Framework retains the Runner reward and accuracy and writes a sparse token-level `rm_scores` tensor with the reward on the final token. This is the final result for standalone/inference. TQ training subsequently runs its colocated reward pass and replaces `rm_scores`.
 
 The colocated TQ pass currently replaces only `rm_scores`; validation continues
-to read the Runner metrics already stored under
+to read the Runner accuracy already stored under
 `extra_fields["reward_extra_info"]`. Use streaming handles when Worker-produced
 validation metrics must be the canonical output.
 
@@ -177,9 +177,9 @@ Custom validation scorers should return a stable metric-key set across samples; 
 The result fields have separate contracts:
 
 - `reward` is the Runner's scalar outcome reward. A streaming Worker receives it as scorer input and decides the final score.
-- `metrics` contains only scalar validation values (`int`, `float`, or `bool`), such as `acc`. The key `reward` is reserved for the outcome column and is rejected inside metrics.
+- `accuracy` becomes the Runner-provided `acc` validation metric.
 - `episode_finished` is a tri-state episode fact, not a validation metric.
-- `reward_context` may contain structured scorer input. A streaming Worker receives it under `extra_info["runner_reward_info"]`; it is never aggregated directly as a validation metric.
+- `extra_info` may contain structured scorer input. A streaming Worker receives it as `extra_info["runner_reward_info"]["reward_context"]`; it is never aggregated directly as a validation metric.
 
 Runner and Worker metrics are not merged in streaming mode. The Worker's
 `reward_extra_info` is the complete final metric set.
@@ -188,9 +188,9 @@ Agent completion is factual episode metadata; the Framework, not the Task, decid
 
 Masking stops at the loss. The trajectory keeps its reward in `rm_scores`, so a group-relative estimator such as GRPO or RLOO still folds that reward into the group mean and standard deviation, shifting the advantages of the sibling rollouts sharing its `uid`. The masked trajectory itself gets a zero advantage, and it still costs a full forward and backward pass. Treat unfinished episodes as evidence that keeps the baseline honest, not as samples removed from the batch.
 
-For Runners that always return a reward, the built-in
+For Task Runners that always return a reward, the built-in
 `uni_agent.framework.task_runner.compute_score` scorer passes that reward and its
-metrics through the streaming Worker. Configure it through verl's existing
+accuracy through the streaming Worker. Configure it through verl's existing
 `reward.custom_reward_function` interface. Custom scorers can instead combine
 the Runner payload with trajectory-dependent signals.
 
@@ -209,26 +209,28 @@ The old Gateway reward endpoint and `report_reward` option were removed. A
 managed Runner must return its annotations directly:
 
 ```python
-from uni_agent.framework import EpisodeResult
+from uni_agent.tasks import TaskResult
 
 
 async def my_runner(*, session, raw_prompt, sample_index, **kwargs):
     # Run the Agent against session.base_url, then evaluate the episode.
-    return EpisodeResult(
+    return TaskResult(
         reward=score,
-        metrics={"acc": accuracy},
+        accuracy=accuracy,
         episode_finished=completed_normally,
-        reward_context={"case_id": case_id},
+        extra_info={"case_id": case_id},
     )
 ```
 
 Remove `reward_info_url`, HTTP posts to `/reward_info`, and
-`runner_kwargs.report_reward` from custom integrations. Runners that do not
-provide annotations may return `None`. Other return types fail the session
-instead of being interpreted as legacy reward dictionaries.
+`runner_kwargs.report_reward` from custom integrations. Every successful Task
+Runner call must return `TaskResult`; use `TaskResult(reward=None)` when it does
+not provide a Runner reward. Exceptions represent failed sessions.
 
 The related type migrations are:
 
+- `AgentRunner` -> `TaskRunner`.
+- Agent Framework config `agent_runners` -> `task_runners`.
 - `AgentResult.finished` -> `AgentResult.episode_finished`.
 - `TaskResult.finished` -> `TaskResult.episode_finished`.
 - `Trajectory.reward_info["reward"]` -> `Trajectory.reward_score`.
@@ -242,7 +244,7 @@ Agent Framework or another explicit downstream owner attaches them.
 
 Uni-Agent does not currently expose a result endpoint for independently hosted
 online Agents. Such an integration should use an authenticated adapter that
-normalizes its response to `EpisodeResult`, rather than restoring the mixed
+normalizes its response to `TaskResult`, rather than restoring the mixed
 Gateway reward dictionary.
 
 ## TransferQueue
@@ -302,7 +304,8 @@ Important knobs include:
   callable that postprocesses finalized trajectories before reward scoring.
 - `trajectory_postprocessor_kwargs`: optional keyword arguments passed to the
   postprocessor.
-- `agent_runners`: Runner import paths and arguments.
+- `task_runners`: Runner import paths and arguments. With multiple entries, each
+  registry key must match the sample's `agent_name`.
 - `dispatch_mode`: inline async execution or Ray tasks.
 - `max_concurrent_sessions`: per-Runner concurrency limit.
 - `log_dir`: runtime log root. Sessions with a global step write `framework.log`, `task.log`, and trajectory artifacts under `step_<global_step>/<log_id>/`; Sessions whose `global_steps` is `None` write directly under `<log_id>/`.
@@ -314,8 +317,8 @@ Important knobs include:
 
 Customize the layer that owns the behavior:
 
-- Implement an Agent Runner to launch a different workload against a Gateway session.
-- Return `EpisodeResult` from a managed Agent Runner; do not write reward data into Gateway routes.
+- Implement a Task Runner to launch a different workload against a Gateway session.
+- Return `TaskResult` from a managed Task Runner; do not write reward data into Gateway routes.
 - Add a Gateway adapter for a new model API wire format.
 - Customize Task, Agent, Tool, and Sandbox behavior through their registries.
 - Implement a trajectory postprocessor for use-case-specific filtering or

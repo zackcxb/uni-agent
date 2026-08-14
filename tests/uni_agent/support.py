@@ -4,16 +4,17 @@ import logging
 
 import torch
 
-from uni_agent.framework import EpisodeResult
+from uni_agent.tasks import TaskResult
 from verl.workers.rollout.replica import TokenOutput
 
 
 async def logging_runner(**kwargs):
     logging.getLogger("test.runner").info("runner task log")
+    return TaskResult()
 
 
 async def typed_result_runner(**kwargs):
-    return EpisodeResult(reward=0.75, metrics={"acc": 1.0}, episode_finished=False)
+    return TaskResult(reward=0.75, accuracy=1.0, episode_finished=False)
 
 
 class FakeTokenizer:

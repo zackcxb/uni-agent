@@ -11,7 +11,7 @@ framework adapter + TransferQueue (TQ):
     ->  per-trajectory records written to TransferQueue
 
 The per-sample score is the trainer's own ``rm_scores`` read back from TQ: ``run_task``
-returns a typed episode result, and the framework writes its reward as ``reward_score`` --
+returns a typed task result, and the framework writes its reward as ``reward_score`` --
 no external reward model. Fan-out is ``rollout.n`` (``--n``),
 with no resolved/wrong-answer/timeout bucketing (just mean ``rm_scores``).
 
@@ -133,7 +133,7 @@ def init_config(args: argparse.Namespace, *, task_configs: list[dict], served_mo
 
     agent_framework_cfg = {
         "gateway_count": args.gateway_count,
-        "agent_runners": {
+        "task_runners": {
             "task": {
                 "runner_fqn": "uni_agent.framework.task_runner.run_task",
                 "dispatch_mode": "ray_task",

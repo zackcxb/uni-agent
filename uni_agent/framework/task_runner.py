@@ -1,5 +1,5 @@
 # ruff: noqa: E501
-"""Agent runner that bridges the framework's gateway sessions to uni_agent tasks."""
+"""Task runner that bridges the framework's gateway sessions to uni_agent tasks."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from uni_agent.rlinsight_adapter import task_span
-from uni_agent.framework.contracts import EpisodeResult
-from uni_agent.tasks import TaskConfigResolver, get_task
+from uni_agent.tasks import TaskConfigResolver, TaskResult, get_task
 from uni_agent.tasks.config import _deep_merge
 
 if TYPE_CHECKING:
@@ -82,6 +81,7 @@ def compute_score(
     solution_str: str,
     ground_truth: object,
     extra_info: dict[str, Any],
+    **_reward_manager_kwargs: Any,
 ) -> dict[str, int | float | bool]:
     """Pass the managed runner's reward payload through a RewardLoopWorker."""
     runner_reward_info = extra_info["runner_reward_info"]
@@ -97,7 +97,7 @@ async def run_task(
     task_config_path: str | None = None,
     api_key: str = "EMPTY",
     model_name: str | None = None,
-) -> EpisodeResult:
+) -> TaskResult:
     """Resolve the sample's task, run it against ``session``, and return its result.
 
     Satisfies the framework's ``AgentRunner`` contract (``session`` / ``raw_prompt``
@@ -106,8 +106,7 @@ async def run_task(
 
     Run-level defaults come from the per-task-name YAML file selected by
     ``task_config_path``. ``TaskConfigResolver`` applies that Task Config, the
-    sample values, and the live endpoint in order. The Task result is normalized
-    to the Agent Framework's typed episode-result contract.
+    sample values, and the live endpoint in order.
     """
     sample_config = tools_kwargs.get("task") if tools_kwargs else None
     if not isinstance(sample_config, dict):
@@ -149,12 +148,4 @@ async def run_task(
             result.accuracy,
             result.episode_finished,
         )
-    metrics: dict[str, int | float | bool] = {}
-    if result.accuracy is not None:
-        metrics["acc"] = result.accuracy
-    return EpisodeResult(
-        reward=None if result.reward is None else float(result.reward),
-        metrics=metrics,
-        episode_finished=result.episode_finished,
-        reward_context=dict(result.extra_info or {}),
-    )
+    return result

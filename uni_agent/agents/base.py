@@ -74,7 +74,7 @@ class AgentConfig(BaseModel):
 class AgentResult:
     """Artifacts one Agent produced for an episode.
 
-    Reward annotations belong to the Framework's ``EpisodeResult`` contract,
+    Evaluation and reward annotations belong to the Task layer's ``TaskResult``,
     not this Agent-layer result.
 
     ``episode_finished`` is tri-state: ``True``/``False`` report a known

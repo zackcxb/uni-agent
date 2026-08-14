@@ -1,6 +1,5 @@
 import pytest
 
-from uni_agent.framework import EpisodeResult
 from uni_agent.framework import task_runner as task_runner_module
 from uni_agent.framework.task_runner import (
     _extract_upstream,
@@ -73,61 +72,38 @@ def test_inject_gateway_tunnel_rejects_non_yuanrong_sandbox():
 
 @pytest.mark.cpu
 @pytest.mark.level0
-def test_task_result_positional_field_order():
-    result = TaskResult(0.5, 1.0, False, {"reason": "limit"})
+@pytest.mark.parametrize(("value", "expected"), [(True, 1.0), ("0.5", 0.5)])
+def test_task_result_normalizes_numeric_fields(value, expected):
+    result = TaskResult(reward=value, accuracy=value)  # type: ignore[arg-type]
 
-    assert result.reward == 0.5
-    assert result.accuracy == 1.0
-    assert result.episode_finished is False
-    assert result.extra_info == {"reason": "limit"}
-
-
-@pytest.mark.cpu
-@pytest.mark.level0
-def test_episode_result_separates_reward_status_metrics_and_context():
-    result = EpisodeResult(
-        reward=0.5,
-        metrics={"acc": 1.0, "steps": 4},
-        episode_finished=False,
-        reward_context={"report": {"resolved": 1}},
-    )
-
-    assert result.reward == 0.5
-    assert result.metrics == {"acc": 1.0, "steps": 4}
-    assert result.episode_finished is False
-    assert result.reward_context == {"report": {"resolved": 1}}
+    assert result.reward == expected
+    assert result.accuracy == expected
 
 
 @pytest.mark.cpu
 @pytest.mark.level0
-def test_task_result_uses_episode_finished_name():
-    result = TaskResult(reward=0.5, accuracy=1.0, episode_finished=False)
-
-    assert result.episode_finished is False
-    assert not hasattr(result, "finished")
+@pytest.mark.parametrize(("field", "value"), [("reward", "not-a-number"), ("accuracy", float("inf"))])
+def test_task_result_rejects_invalid_numeric_fields(field, value):
+    with pytest.raises(ValueError, match=rf"TaskResult\.{field} must be a finite number or numeric string"):
+        TaskResult(**{field: value})
 
 
 @pytest.mark.cpu
 @pytest.mark.level0
-def test_episode_result_rejects_non_scalar_metrics():
-    with pytest.raises(ValueError, match=r"metrics\['report'\] must be scalar"):
-        EpisodeResult(metrics={"report": {"resolved": 1}})
+def test_task_result_rejects_invalid_completion_and_extra_info():
+    with pytest.raises(ValueError, match="TaskResult.episode_finished must be a bool or None"):
+        TaskResult(episode_finished=1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="TaskResult.extra_info must be a dict"):
+        TaskResult(extra_info=None)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize(("reward", "expected"), [(True, 1.0), ("0.5", 0.5)])
-def test_episode_result_normalizes_numeric_reward(reward, expected):
-    assert EpisodeResult(reward=reward).reward == expected  # type: ignore[arg-type]
+@pytest.mark.cpu
+@pytest.mark.level0
+def test_task_result_represents_missing_reward_explicitly():
+    result = TaskResult()
 
-
-@pytest.mark.parametrize("reward", ["not-a-number", float("inf")])
-def test_episode_result_rejects_invalid_reward(reward):
-    with pytest.raises(ValueError, match="finite number or numeric string"):
-        EpisodeResult(reward=reward)  # type: ignore[arg-type]
-
-
-def test_episode_result_rejects_reserved_reward_metric():
-    with pytest.raises(ValueError, match="key 'reward' is reserved"):
-        EpisodeResult(metrics={"reward": 0.5})
+    assert result.reward is None
+    assert result.extra_info == {}
 
 
 @pytest.mark.cpu
@@ -177,7 +153,7 @@ async def test_run_task_binds_raw_prompt_to_sample_task_config(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
-async def test_run_task_returns_episode_result(monkeypatch):
+async def test_run_task_returns_task_result_without_wrapping(monkeypatch):
     task_result = TaskResult(
         reward=0.5,
         accuracy=1.0,
@@ -203,12 +179,7 @@ async def test_run_task_returns_episode_result(monkeypatch):
         tools_kwargs={"task": {"name": "stub"}},
     )
 
-    assert result == EpisodeResult(
-        reward=0.5,
-        metrics={"acc": 1.0},
-        episode_finished=False,
-        reward_context={"report": {"resolved": 1}},
-    )
+    assert result is task_result
 
 
 def test_compute_score_passes_through_runner_reward_info():
@@ -223,4 +194,6 @@ def test_compute_score_passes_through_runner_reward_info():
                 "reward_context": {"trace": "unused by pass-through"},
             }
         },
+        reward_router_address="http://reward-router",
+        reward_model_tokenizer=object(),
     ) == {"score": 0.5, "acc": True, "format": 0.8}
