@@ -156,7 +156,7 @@ The built-in Task Runner returns:
 TaskResult(
     reward=1.0,
     accuracy=1.0,
-    episode_finished=True,
+    finished=True,
     extra_info={...},
 )
 ```
@@ -178,13 +178,13 @@ The result fields have separate contracts:
 
 - `reward` is the Runner's scalar outcome reward. A streaming Worker receives it as scorer input and decides the final score.
 - `accuracy` becomes the Runner-provided `acc` validation metric.
-- `episode_finished` is a tri-state episode fact, not a validation metric.
+- `finished` is a tri-state episode fact, not a validation metric.
 - `extra_info` may contain structured scorer input. A streaming Worker receives it as `extra_info["runner_reward_info"]["reward_context"]`; it is never aggregated directly as a validation metric.
 
 Runner and Worker metrics are not merged in streaming mode. The Worker's
 `reward_extra_info` is the complete final metric set.
 
-Agent completion is factual episode metadata; the Framework, not the Task, decides how training consumes it. When the training configuration enables `mask_unfinished_episode`, an episode with `episode_finished=False` is still written and tagged as successful, but its TransferQueue `response_mask` and `loss_mask` are all zero so it does not contribute policy gradients, loss-normalization counts, or auxiliary losses.
+Agent completion is factual episode metadata; the Framework, not the Task, decides how training consumes it. When the training configuration enables `mask_unfinished_episode`, an episode with `finished=False` is still written and tagged as successful, but its TransferQueue `response_mask` and `loss_mask` are all zero so it does not contribute policy gradients, loss-normalization counts, or auxiliary losses.
 
 Masking stops at the loss. The trajectory keeps its reward in `rm_scores`, so a group-relative estimator such as GRPO or RLOO still folds that reward into the group mean and standard deviation, shifting the advantages of the sibling rollouts sharing its `uid`. The masked trajectory itself gets a zero advantage, and it still costs a full forward and backward pass. Treat unfinished episodes as evidence that keeps the baseline honest, not as samples removed from the batch.
 
@@ -217,7 +217,7 @@ async def my_runner(*, session, raw_prompt, sample_index, **kwargs):
     return TaskResult(
         reward=score,
         accuracy=accuracy,
-        episode_finished=completed_normally,
+        finished=completed_normally,
         extra_info={"case_id": case_id},
     )
 ```
@@ -231,10 +231,8 @@ The related type migrations are:
 
 - `AgentRunner` -> `TaskRunner`.
 - Agent Framework config `agent_runners` -> `task_runners`.
-- `AgentResult.finished` -> `AgentResult.episode_finished`.
-- `TaskResult.finished` -> `TaskResult.episode_finished`.
 - `Trajectory.reward_info["reward"]` -> `Trajectory.reward_score`.
-- `Trajectory.reward_info["finished"]` -> `Trajectory.episode_finished`.
+- `Trajectory.reward_info["finished"]` -> `Trajectory.finished`.
 - Other scalar validation entries in `Trajectory.reward_info` ->
   `Trajectory.reward_metrics`.
 
@@ -295,7 +293,7 @@ Important knobs include:
 
 - `gateway_count`: Gateway actor pool size.
 - `mask_unfinished_episode`: zeroes training masks for sessions that report
-  `episode_finished=False`. Sessions without completion metadata remain trainable.
+  `finished=False`. Sessions without completion metadata remain trainable.
   Defaults to `false`.
 - `enable_last_assistant_rollback`: reuses a chain when only its latest Assistant
   message is rewritten. Defaults to `true`; set it to `false` to preserve the

@@ -222,7 +222,7 @@ async def test_multiple_chains_linear_conversation_stays_single_chain():
     assert len(chain_trajectories) == 1
     assert 0 in chain_trajectories[0].response_mask
     assert chain_trajectories[0].response_mask[-len("SECOND") :] == [1] * len("SECOND")
-    assert chain_trajectories[0].episode_finished is None
+    assert chain_trajectories[0].finished is None
     assert chain_trajectories[0].reward_score is None
     assert chain_trajectories[0].reward_metrics == {}
 

@@ -49,7 +49,7 @@ class Trajectory:
             output and ``0`` marks interstitial context tokens.
         response_logprobs: Optional log probabilities aligned with
             ``response_ids``; continuation context tokens use ``0.0``.
-        episode_finished: Tri-state episode completion fact attached by the
+        finished: Tri-state episode completion fact attached by the
             Agent Framework after the managed runner returns.
         reward_score: Optional scalar reward assigned by the Agent Framework
             from a managed Runner or RewardLoopWorker.
@@ -67,7 +67,7 @@ class Trajectory:
     response_ids: list[int]
     response_mask: list[int]
     response_logprobs: list[float] | None = None
-    episode_finished: bool | None = None
+    finished: bool | None = None
     reward_score: float | None = None
     reward_metrics: dict[str, int | float | bool] = field(default_factory=dict)
     num_turns: int = 0

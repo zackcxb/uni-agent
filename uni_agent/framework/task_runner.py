@@ -142,10 +142,10 @@ async def run_task(
         result = await task_instance.run()
         span.record_result(result, reward_posted=False)
         logger.info(
-            "run_task done: task=%s reward=%s acc=%s episode_finished=%s",
+            "run_task done: task=%s reward=%s acc=%s finished=%s",
             task_name,
             result.reward,
             result.accuracy,
-            result.episode_finished,
+            result.finished,
         )
     return result

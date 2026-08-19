@@ -109,7 +109,7 @@ class MyTask(Task):
         return TaskResult(
             reward=score,
             accuracy=score,
-            episode_finished=agent_result.episode_finished,
+            finished=agent_result.finished,
             extra_info={"score": score},
         )
 ```
@@ -144,7 +144,7 @@ The Task converts that payload into `TaskResult`:
 TaskResult(
     reward=float(result["resolved"]),
     accuracy=float(result["resolved"]),
-    episode_finished=agent_result.episode_finished,
+    finished=agent_result.finished,
     extra_info=result,
 )
 ```
@@ -157,8 +157,8 @@ Worker handles are available, the Framework passes the complete Runner result
 under `extra_info["runner_reward_info"]` and the Worker's scorer decides how to
 use it. Custom Task Runners return the same `TaskResult` contract.
 
-`TaskResult.episode_finished` is factual episode metadata copied from
-`AgentResult.episode_finished`; it does not decide whether the trajectory contributes to
+`TaskResult.finished` is factual episode metadata copied from
+`AgentResult.finished`; it does not decide whether the trajectory contributes to
 training. The Agent Framework owns that policy through
 `mask_unfinished_episode`, so the same Task Config can be reused for
 inference, evaluation, and different training runs without embedding optimizer
@@ -226,7 +226,7 @@ TASK_MODULES["my_task"] = "my_package.task"
 - Put sample-specific evaluation data in `metadata`.
 - Emit normal log records and let the invoking runtime bind their `LogContext`.
 - Return a `TaskResult` for every successful episode.
-- Use `episode_finished=False` only when the Agent is known not to have completed
+- Use `finished=False` only when the Agent is known not to have completed
   normally; leave it as `None` when the Agent does not report completion.
 - Let infrastructure failures propagate instead of silently converting them to zero reward.
 - Keep reward implementation close to the Task; do not force unrelated tasks into one reward schema.

@@ -149,7 +149,7 @@ def test_run_forwards_workdir():
         )
     )
 
-    assert result.episode_finished is True
+    assert result.finished is True
     assert len(sandbox.exec_calls) == 1
     assert sandbox.exec_calls[0]["workdir"] == "/testbed"
     assert sandbox.exec_calls[0]["timeout"] == 123.0
@@ -287,7 +287,7 @@ def test_run_reports_nonzero_process_exit():
         )
     )
 
-    assert result.episode_finished is False
+    assert result.finished is False
     assert result.info["exit_code"] == 2
 
 

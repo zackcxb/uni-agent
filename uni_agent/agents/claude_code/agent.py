@@ -136,7 +136,7 @@ class ClaudeCodeAgent(Agent):
 
         return AgentResult(
             info={"exit_code": proc.exit_code, "stdout_tail": out_tail, "stderr_tail": err_tail},
-            episode_finished=proc.exit_code == 0,
+            finished=proc.exit_code == 0,
         )
 
     # ----- helpers -----

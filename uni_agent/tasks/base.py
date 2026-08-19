@@ -94,7 +94,7 @@ class TaskResult:
 
     reward: float | None = None
     accuracy: float | None = None
-    episode_finished: bool | None = None
+    finished: bool | None = None
     extra_info: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -109,8 +109,8 @@ class TaskResult:
             if not math.isfinite(normalized):
                 raise ValueError(f"TaskResult.{field_name} must be a finite number or numeric string")
             setattr(self, field_name, normalized)
-        if self.episode_finished is not None and type(self.episode_finished) is not bool:
-            raise ValueError("TaskResult.episode_finished must be a bool or None")
+        if self.finished is not None and type(self.finished) is not bool:
+            raise ValueError("TaskResult.finished must be a bool or None")
         if not isinstance(self.extra_info, dict):
             raise ValueError("TaskResult.extra_info must be a dict")
 

@@ -97,7 +97,7 @@ def _agent() -> ReActAgent:
 @pytest.mark.cpu
 @pytest.mark.level0
 def test_agent_result_defaults_to_unreported_completion():
-    assert AgentResult().episode_finished is None
+    assert AgentResult().finished is None
 
 
 @pytest.mark.cpu
@@ -152,7 +152,7 @@ async def test_react_reports_completion(monkeypatch, termination_reason: str, ex
 
     result = await agent.run(sandbox=object(), messages=[], workdir="/testbed")
 
-    assert result.episode_finished is expected
+    assert result.finished is expected
     assert toolbox.calls == [("shell", {"command": "cd -- /testbed"})]
 
 

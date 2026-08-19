@@ -77,7 +77,7 @@ class AgentResult:
     Evaluation and reward annotations belong to the Task layer's ``TaskResult``,
     not this Agent-layer result.
 
-    ``episode_finished`` is tri-state: ``True``/``False`` report a known
+    ``finished`` is tri-state: ``True``/``False`` report a known
     completion state, and ``None`` means the Agent does not track one. Opting
     out never silently marks an episode untrainable.
     """
@@ -85,7 +85,7 @@ class AgentResult:
     output: dict[str, Any] = dataclasses.field(default_factory=dict)
     transcript: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     info: dict[str, Any] = dataclasses.field(default_factory=dict)
-    episode_finished: bool | None = None
+    finished: bool | None = None
 
 
 class Agent(ABC):

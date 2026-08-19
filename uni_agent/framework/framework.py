@@ -625,7 +625,7 @@ class GatewayAgentFramework(AgentFramework):
                 success_outputs += len(trajectories)
                 # One session is one episode; its trajectories all carry the same
                 # session-level completion flag, so this counts episodes, not tokens.
-                if any(traj.episode_finished is False for traj in trajectories):
+                if any(traj.finished is False for traj in trajectories):
                     unfinished_episodes += 1
 
         if success_sessions > 0:
@@ -854,7 +854,7 @@ class GatewayAgentFramework(AgentFramework):
                 result_trajectories = [
                     replace(
                         traj,
-                        episode_finished=task_result.episode_finished,
+                        finished=task_result.finished,
                         reward_metrics=dict(task_metrics),
                     )
                     for traj in session_trajectories
@@ -864,7 +864,7 @@ class GatewayAgentFramework(AgentFramework):
                 result_trajectories = [
                     replace(
                         traj,
-                        episode_finished=task_result.episode_finished,
+                        finished=task_result.finished,
                         reward_score=score,
                         reward_metrics=extra if reward_source == "reward_loop_worker" else dict(task_metrics),
                     )
@@ -922,12 +922,12 @@ class GatewayAgentFramework(AgentFramework):
         lines = [f"session {session_id}: {len(trajectories)} trajectory(ies)"]
         for i, traj in enumerate(trajectories):
             model_tokens = sum(traj.response_mask) if traj.response_mask else 0
-            episode_finished = traj.episode_finished
+            finished = traj.finished
             reason = (traj.extra_fields or {}).get("materialization_reason")
             lines.append(
                 f"  [{i}] turns={traj.num_turns} prompt_tokens={len(traj.prompt_ids)} "
                 f"response_tokens={len(traj.response_ids)} model_tokens={model_tokens} "
-                f"episode_finished={episode_finished} "
+                f"finished={finished} "
                 f"logprobs={'yes' if traj.response_logprobs else 'no'} "
                 f"experts={'yes' if traj.routed_experts is not None else 'no'} "
                 f"reward_score={traj.reward_score} reward_metrics={traj.reward_metrics}"
@@ -977,7 +977,7 @@ class GatewayAgentFramework(AgentFramework):
         extra = traj.extra_fields or {}
         return {
             "num_turns": traj.num_turns,
-            "episode_finished": traj.episode_finished,
+            "finished": traj.finished,
             "reward_score": traj.reward_score,
             "reward_metrics": dict(traj.reward_metrics),
             "materialization_reason": extra.get("materialization_reason"),
@@ -1090,12 +1090,12 @@ class GatewayAgentFramework(AgentFramework):
         prompts = torch.tensor(trajectory.prompt_ids, dtype=torch.long)
         responses = torch.tensor(trajectory.response_ids, dtype=torch.long)
         source_response_mask = torch.tensor(trajectory.response_mask, dtype=torch.long)
-        episode_finished = trajectory.episode_finished
-        if episode_finished is not None and type(episode_finished) is not bool:
-            raise ValueError("Trajectory.episode_finished must be a bool or None")
+        finished = trajectory.finished
+        if finished is not None and type(finished) is not bool:
+            raise ValueError("Trajectory.finished must be a bool or None")
         response_mask = (
             torch.zeros_like(source_response_mask)
-            if self._mask_unfinished_episode and episode_finished is False
+            if self._mask_unfinished_episode and finished is False
             else source_response_mask
         )
         input_ids = torch.cat([prompts, responses], dim=0)

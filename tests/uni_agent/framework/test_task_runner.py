@@ -91,8 +91,8 @@ def test_task_result_rejects_invalid_numeric_fields(field, value):
 @pytest.mark.cpu
 @pytest.mark.level0
 def test_task_result_rejects_invalid_completion_and_extra_info():
-    with pytest.raises(ValueError, match="TaskResult.episode_finished must be a bool or None"):
-        TaskResult(episode_finished=1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="TaskResult.finished must be a bool or None"):
+        TaskResult(finished=1)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="TaskResult.extra_info must be a dict"):
         TaskResult(extra_info=None)  # type: ignore[arg-type]
 
@@ -157,7 +157,7 @@ async def test_run_task_returns_task_result_without_wrapping(monkeypatch):
     task_result = TaskResult(
         reward=0.5,
         accuracy=1.0,
-        episode_finished=False,
+        finished=False,
         extra_info={"report": {"resolved": 1}},
     )
 

@@ -733,7 +733,7 @@ async def test_gateway_actor_finalizes_unannotated_trajectories(ray_runtime):
     ray.get(actor.shutdown.remote())
 
     assert len(trajectories) == 1
-    assert trajectories[0].episode_finished is None
+    assert trajectories[0].finished is None
     assert trajectories[0].reward_score is None
     assert trajectories[0].reward_metrics == {}
 

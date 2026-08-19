@@ -113,7 +113,7 @@ class ReActAgent(Agent):
         return AgentResult(
             transcript=transcript,
             info=trajectory_info,
-            episode_finished=termination_reason == "finished",
+            finished=termination_reason == "finished",
         )
 
     async def step(

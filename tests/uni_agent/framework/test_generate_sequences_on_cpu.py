@@ -338,7 +338,7 @@ def _trajectory(
     response_ids: list[int] | None = None,
     response_mask: list[int] | None = None,
     response_logprobs: list[float] | None = None,
-    episode_finished: bool | None = None,
+    finished: bool | None = None,
     reward_score: float | None = None,
     reward_metrics: dict[str, int | float | bool] | None = None,
     num_turns: int = 2,
@@ -353,7 +353,7 @@ def _trajectory(
         response_ids=response_ids,
         response_mask=response_mask,
         response_logprobs=response_logprobs,
-        episode_finished=episode_finished,
+        finished=finished,
         reward_score=reward_score,
         reward_metrics=dict(reward_metrics or {}),
         num_turns=num_turns,
@@ -441,7 +441,7 @@ async def test_framework_applies_managed_runner_task_result():
         return TaskResult(
             reward=0.5,
             accuracy=1.0,
-            episode_finished=False,
+            finished=False,
             extra_info={"case_id": "case-1"},
         )
 
@@ -461,7 +461,7 @@ async def test_framework_applies_managed_runner_task_result():
         sampling_params={},
     )
 
-    assert trajectories[0].episode_finished is False
+    assert trajectories[0].finished is False
     assert trajectories[0].reward_score == 0.5
     assert trajectories[0].reward_metrics == {"acc": 1.0}
 
@@ -491,7 +491,7 @@ async def test_ray_task_runner_returns_task_result():
 
     assert trajectories[0].reward_score == 0.75
     assert trajectories[0].reward_metrics == {"acc": 1.0}
-    assert trajectories[0].episode_finished is False
+    assert trajectories[0].finished is False
 
 
 @pytest.mark.asyncio
@@ -558,7 +558,7 @@ async def test_reward_worker_processes_runner_reward_info_and_owns_final_metrics
         return TaskResult(
             reward=0.5,
             accuracy=1.0,
-            episode_finished=True,
+            finished=True,
             extra_info={"case_id": "case-1"},
         )
 
@@ -665,7 +665,7 @@ async def test_reward_worker_rejects_non_finite_score():
 @pytest.mark.asyncio
 async def test_metrics_survive_without_any_reward_source():
     async def result_runner(**kwargs):
-        return TaskResult(reward=None, accuracy=1.0, episode_finished=None)
+        return TaskResult(reward=None, accuracy=1.0, finished=None)
 
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
     framework = await _build_framework_with_task_runners(
@@ -969,7 +969,7 @@ async def test_generate_sequences_writes_tq_schema_for_each_session(monkeypatch,
 @pytest.mark.asyncio
 async def test_generate_sequences_masks_unfinished_trajectory_without_dropping_it(fake_tq):
     async def unfinished_runner(**kwargs):
-        return TaskResult(reward=0.5, episode_finished=False)
+        return TaskResult(reward=0.5, finished=False)
 
     runtime = _FakeGatewayManager(
         {
@@ -1000,8 +1000,8 @@ async def test_generate_sequences_masks_unfinished_trajectory_without_dropping_i
     assert batch["fields"]["loss_mask"][0].tolist() == [0, 0, 0]
     assert batch["fields"]["rm_scores"][0].tolist() == [0.0, 0.0, 0.5]
     assert batch["tags"][0]["status"] == "success"
-    assert "episode_finished" not in batch["tags"][0]
-    assert "episode_finished" not in batch["fields"].keys()
+    assert "finished" not in batch["tags"][0]
+    assert "finished" not in batch["fields"].keys()
     assert fake_tq.puts == [{"key": "uid-0", "partition_id": "train", "tag": {"status": "finished"}}]
 
 
@@ -1010,7 +1010,7 @@ async def test_generate_sequences_masks_unfinished_trajectory_without_dropping_i
 @pytest.mark.asyncio
 async def test_unfinished_trajectory_remains_trainable_when_masking_is_disabled(fake_tq):
     async def unfinished_runner(**kwargs):
-        return TaskResult(reward=0.5, episode_finished=False)
+        return TaskResult(reward=0.5, finished=False)
 
     runtime = _FakeGatewayManager(
         {
@@ -1032,8 +1032,8 @@ async def test_unfinished_trajectory_remains_trainable_when_masking_is_disabled(
     batch = fake_tq.batch_puts[0]
     assert batch["fields"]["response_mask"][0].tolist() == [1, 1]
     assert batch["fields"]["loss_mask"][0].tolist() == [1, 1]
-    assert "episode_finished" not in batch["tags"][0]
-    assert "episode_finished" not in batch["fields"].keys()
+    assert "finished" not in batch["tags"][0]
+    assert "finished" not in batch["fields"].keys()
 
 
 @pytest.mark.cpu
@@ -1041,7 +1041,7 @@ async def test_unfinished_trajectory_remains_trainable_when_masking_is_disabled(
 @pytest.mark.asyncio
 async def test_masking_keeps_trajectory_trainable_when_completion_metadata_is_missing(fake_tq):
     async def unknown_completion_runner(**kwargs):
-        return TaskResult(reward=0.5, episode_finished=None)
+        return TaskResult(reward=0.5, finished=None)
 
     runtime = _FakeGatewayManager(
         {
@@ -1073,7 +1073,7 @@ async def test_generate_sequences_reports_unfinished_episode_count(fake_tq, capl
     # A session materializing two trajectories is still one episode: completion is
     # session-level metadata copied onto every trajectory it produced.
     async def unfinished_runner(**kwargs):
-        return TaskResult(reward=0.5, episode_finished=False)
+        return TaskResult(reward=0.5, finished=False)
 
     runtime = _FakeGatewayManager(
         {
@@ -1101,7 +1101,7 @@ async def test_generate_sequences_reports_unfinished_episode_count(fake_tq, capl
 @pytest.mark.asyncio
 async def test_tq_nests_acc_under_reward_extra_info(fake_tq):
     async def scored_runner(**kwargs):
-        return TaskResult(reward=0.5, accuracy=1.0, episode_finished=True)
+        return TaskResult(reward=0.5, accuracy=1.0, finished=True)
 
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
     framework = await _build_framework_with_task_runners(

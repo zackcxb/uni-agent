@@ -230,7 +230,7 @@ def trajectory_to_record(
             "response_logprobs": (
                 list(trajectory.response_logprobs) if trajectory.response_logprobs is not None else None
             ),
-            "episode_finished": trajectory.episode_finished,
+            "finished": trajectory.finished,
             "reward_score": trajectory.reward_score,
             "reward_metrics": dict(trajectory.reward_metrics),
             "num_turns": trajectory.num_turns,

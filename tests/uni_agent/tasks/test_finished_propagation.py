@@ -26,11 +26,11 @@ class _Sandbox:
 
 class _Agent:
     async def run(self, **kwargs):
-        return AgentResult(info={"steps": 1}, episode_finished=False)
+        return AgentResult(info={"steps": 1}, finished=False)
 
 
 @pytest.mark.asyncio
-async def test_swe_bench_multilingual_propagates_episode_finished(monkeypatch):
+async def test_swe_bench_multilingual_propagates_finished(monkeypatch):
     async def compute_reward(*args, **kwargs):
         return {"resolved": True}
 
@@ -51,11 +51,11 @@ async def test_swe_bench_multilingual_propagates_episode_finished(monkeypatch):
 
     result = await task.run()
 
-    assert result.episode_finished is False
+    assert result.finished is False
 
 
 @pytest.mark.asyncio
-async def test_terminal_bench_propagates_episode_finished(monkeypatch):
+async def test_terminal_bench_propagates_finished(monkeypatch):
     async def compute_reward(*args, **kwargs):
         return {"reward": 1.0, "resolved": True}
 
@@ -78,4 +78,4 @@ async def test_terminal_bench_propagates_episode_finished(monkeypatch):
 
     result = await task.run()
 
-    assert result.episode_finished is False
+    assert result.finished is False

@@ -211,7 +211,7 @@ Each trajectory record has `schema_version: 2` and stores the finalized
 - `response_ids`
 - `response_mask`
 - `response_logprobs`
-- `episode_finished`
+- `finished`
 - `reward_score`
 - `reward_metrics`
 - `num_turns`

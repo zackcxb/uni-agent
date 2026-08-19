@@ -64,7 +64,7 @@ class SWEREBenchTask(Task):
                 logger.info("applying gold patch to /testbed")
                 await sandbox.write_file("/tmp/gold_patch.patch", sample["patch"])
                 await sandbox.exec(["git", "apply", "--whitespace=fix", "/tmp/gold_patch.patch"], workdir="/testbed")
-                episode_finished = True
+                finished = True
             else:
                 agent = self.build_agent()
                 messages = cfg.prompt
@@ -74,7 +74,7 @@ class SWEREBenchTask(Task):
                     messages=messages,
                     workdir="/testbed",
                 )
-                episode_finished = agent_result.episode_finished
+                finished = agent_result.finished
 
             try:
                 from .reward import compute_reward
@@ -88,6 +88,6 @@ class SWEREBenchTask(Task):
             return TaskResult(
                 reward=float(result["resolved"]),
                 accuracy=float(result["resolved"]),
-                episode_finished=episode_finished,
+                finished=finished,
                 extra_info=result,
             )

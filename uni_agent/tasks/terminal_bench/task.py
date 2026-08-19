@@ -144,7 +144,7 @@ class TerminalBenchTask(Task):
                     sandbox,
                     timeout=agent_timeout,
                 )
-                episode_finished: bool | None = agent_info["exit_code"] == 0
+                finished: bool | None = agent_info["exit_code"] == 0
             else:
                 agent = self.build_agent()
                 try:
@@ -163,7 +163,7 @@ class TerminalBenchTask(Task):
                         "timed_out": True,
                         "error": f"agent exceeded {agent_timeout:g}s",
                     }
-                    episode_finished = False
+                    finished = False
                 except Exception as exc:  # score the resulting filesystem even when the agent fails
                     logger.exception("Terminal-Bench agent failed for %s; continuing to verifier", instance_id)
                     agent_info = {
@@ -171,7 +171,7 @@ class TerminalBenchTask(Task):
                         "timed_out": False,
                         "error": f"{type(exc).__name__}: {exc}",
                     }
-                    episode_finished = False
+                    finished = False
                 else:
                     agent_info = {
                         "mode": "agent",
@@ -179,7 +179,7 @@ class TerminalBenchTask(Task):
                         "error": None,
                         **agent_result.info,
                     }
-                    episode_finished = agent_result.episode_finished
+                    finished = agent_result.finished
 
             from .reward import compute_reward
 
@@ -199,6 +199,6 @@ class TerminalBenchTask(Task):
         return TaskResult(
             reward=score,
             accuracy=score,
-            episode_finished=episode_finished,
+            finished=finished,
             extra_info=result,
         )

@@ -14,7 +14,7 @@ async def logging_runner(**kwargs):
 
 
 async def typed_result_runner(**kwargs):
-    return TaskResult(reward=0.75, accuracy=1.0, episode_finished=False)
+    return TaskResult(reward=0.75, accuracy=1.0, finished=False)
 
 
 class FakeTokenizer:
