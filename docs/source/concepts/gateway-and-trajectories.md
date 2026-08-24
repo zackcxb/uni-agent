@@ -20,7 +20,7 @@ verl-managed inference and training use the full path:
 verl LLMServerManager
     -> AgentFrameworkRolloutAdapter
     -> Uni-Agent Gateway session
-    -> Task Runner
+    -> Agent Runner
     -> Task / Agent / Sandbox
     -> TransferQueue
 ```
@@ -33,11 +33,11 @@ For each rollout session, the Agent Framework:
 
 1. Chooses a Gateway actor and creates a session.
 2. Receives a session-scoped model `base_url`.
-3. Launches the configured Task Runner, such as `run_task`.
+3. Launches the configured Agent Runner, such as `run_task`.
 4. The runner injects the session endpoint into `agent.model`.
 5. The Agent sends OpenAI Chat Completions or Anthropic Messages requests to the session URL.
 6. The Gateway forwards tokenized requests to the verl rollout engine.
-7. The managed Task Runner returns a `TaskResult` to the Framework.
+7. The managed Agent Runner returns a `TaskResult` to the Framework.
 8. The Framework finalizes the session, attaches reward/status/metrics, and writes trajectories to TransferQueue.
 
 The model-facing endpoints are:
@@ -150,7 +150,7 @@ by default and can be disabled with
 
 ## Reward Flow
 
-The built-in Task Runner returns:
+The built-in Agent Runner returns:
 
 ```python
 TaskResult(
@@ -188,7 +188,7 @@ Agent completion is factual episode metadata; the Framework, not the Task, decid
 
 Masking stops at the loss. The trajectory keeps its reward in `rm_scores`, so a group-relative estimator such as GRPO or RLOO still folds that reward into the group mean and standard deviation, shifting the advantages of the sibling rollouts sharing its `uid`. The masked trajectory itself gets a zero advantage, and it still costs a full forward and backward pass. Treat unfinished episodes as evidence that keeps the baseline honest, not as samples removed from the batch.
 
-For Task Runners that always return a reward, the built-in
+For Agent Runners that always return a reward, the built-in
 `uni_agent.framework.task_runner.compute_score` scorer passes that reward and its
 accuracy through the streaming Worker. Configure it through verl's existing
 `reward.custom_reward_function` interface. Custom scorers can instead combine
@@ -223,14 +223,12 @@ async def my_runner(*, session, raw_prompt, sample_index, **kwargs):
 ```
 
 Remove `reward_info_url`, HTTP posts to `/reward_info`, and
-`runner_kwargs.report_reward` from custom integrations. Every successful Task
+`runner_kwargs.report_reward` from custom integrations. Every successful Agent
 Runner call must return `TaskResult`; use `TaskResult(reward=None)` when it does
 not provide a Runner reward. Exceptions represent failed sessions.
 
 The related type migrations are:
 
-- `AgentRunner` -> `TaskRunner`.
-- Agent Framework config `agent_runners` -> `task_runners`.
 - `Trajectory.reward_info["reward"]` -> `Trajectory.reward_score`.
 - `Trajectory.reward_info["finished"]` -> `Trajectory.finished`.
 - Other scalar validation entries in `Trajectory.reward_info` ->
@@ -302,7 +300,7 @@ Important knobs include:
   callable that postprocesses finalized trajectories before reward scoring.
 - `trajectory_postprocessor_kwargs`: optional keyword arguments passed to the
   postprocessor.
-- `task_runners`: Runner import paths and arguments. With multiple entries, each
+- `agent_runners`: Runner import paths and arguments. With multiple entries, each
   registry key must match the sample's `agent_name`.
 - `dispatch_mode`: inline async execution or Ray tasks.
 - `max_concurrent_sessions`: per-Runner concurrency limit.
@@ -315,8 +313,8 @@ Important knobs include:
 
 Customize the layer that owns the behavior:
 
-- Implement a Task Runner to launch a different workload against a Gateway session.
-- Return `TaskResult` from a managed Task Runner; do not write reward data into Gateway routes.
+- Implement an Agent Runner to launch a different workload against a Gateway session.
+- Return `TaskResult` from a managed Agent Runner; do not write reward data into Gateway routes.
 - Add a Gateway adapter for a new model API wire format.
 - Customize Task, Agent, Tool, and Sandbox behavior through their registries.
 - Implement a trajectory postprocessor for use-case-specific filtering or

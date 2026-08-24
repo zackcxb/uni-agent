@@ -2,7 +2,7 @@
 
 `build_gateway_manager` owns gateway-universal wiring (driver-side); the trainer
 adapter creates the manager and injects it so the framework only handles its own
-task runner, reward dispatch, and framework-specific config fields.
+agent runner, reward dispatch, and framework-specific config fields.
 
 `AgentFrameworkRolloutAdapter` satisfies the trainer's
 `agent_loop_manager_class` extension-point contract; recipes wire it in via

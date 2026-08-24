@@ -1,5 +1,5 @@
 # ruff: noqa: E501
-"""Task runner that bridges the framework's gateway sessions to uni_agent tasks."""
+"""Agent runner that bridges the framework's gateway sessions to uni_agent tasks."""
 
 from __future__ import annotations
 

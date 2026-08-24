@@ -149,13 +149,13 @@ TaskResult(
 )
 ```
 
-Custom Tasks may use any evaluation method, but the built-in Task Runner currently
+Custom Tasks may use any evaluation method, but the built-in Agent Runner currently
 expects `TaskResult.reward` to be a scalar outcome reward. `TaskResult.accuracy`
 becomes the validation metric `acc`; `extra_info` becomes the structured
 `runner_reward_info.reward_context` payload and is not aggregated as a metric. When streaming Reward Loop
 Worker handles are available, the Framework passes the complete Runner result
 under `extra_info["runner_reward_info"]` and the Worker's scorer decides how to
-use it. Custom Task Runners return the same `TaskResult` contract.
+use it. Custom Agent Runners return the same `TaskResult` contract.
 
 `TaskResult.finished` is factual episode metadata copied from
 `AgentResult.finished`; it does not decide whether the trajectory contributes to

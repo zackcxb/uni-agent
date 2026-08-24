@@ -140,7 +140,7 @@ For prompt resolution, template validation, and `raw_prompt` semantics, see [Sou
 
 ### Ray Runtime Environment
 
-Training runs as a Ray job. Use a Runtime Environment to distribute the repository, expose the bundled `verl` source, install lightweight Task and Sandbox dependencies, and pass credentials to every Task runner.
+Training runs as a Ray job. Use a Runtime Environment to distribute the repository, expose the bundled `verl` source, install lightweight Task and Sandbox dependencies, and pass credentials to every Agent runner.
 
 === "veFaaS"
 

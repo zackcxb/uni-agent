@@ -133,7 +133,7 @@ def init_config(args: argparse.Namespace, *, task_configs: list[dict], served_mo
 
     agent_framework_cfg = {
         "gateway_count": args.gateway_count,
-        "task_runners": {
+        "agent_runners": {
             "task": {
                 "runner_fqn": "uni_agent.framework.task_runner.run_task",
                 "dispatch_mode": "ray_task",

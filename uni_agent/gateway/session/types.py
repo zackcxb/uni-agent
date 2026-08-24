@@ -25,7 +25,7 @@ class InternalGenerationRequest(TypedDict):
 
 @dataclass
 class SessionHandle:
-    """Address returned to task runners for a newly created gateway session.
+    """Address returned to agent runners for a newly created gateway session.
 
     Attributes:
         session_id: Stable session identifier assigned by the caller.

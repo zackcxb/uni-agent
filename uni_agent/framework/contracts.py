@@ -7,8 +7,8 @@ if TYPE_CHECKING:
     from uni_agent.tasks import TaskResult
 
 
-class TaskRunner(Protocol):
-    """Callable that executes one task episode against a Framework-owned Gateway session."""
+class AgentRunner(Protocol):
+    """Callable that executes one agent episode against a Framework-owned Gateway session."""
 
     async def __call__(
         self,

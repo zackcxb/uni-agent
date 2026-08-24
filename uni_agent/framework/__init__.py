@@ -1,9 +1,9 @@
 from .base import AgentFramework
-from .contracts import TaskRunner
+from .contracts import AgentRunner
 from .framework import GatewayAgentFramework
 
 __all__ = [
     "AgentFramework",
     "GatewayAgentFramework",
-    "TaskRunner",
+    "AgentRunner",
 ]

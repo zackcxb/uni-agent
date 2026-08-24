@@ -143,7 +143,7 @@ This mode requires the standard `verl` inference environment, GPUs, Ray, and Tra
 verl LLMServerManager (vLLM or SGLang)
     -> AgentFrameworkRolloutAdapter
     -> Uni-Agent Gateway sessions
-    -> Task Runner and sandbox
+    -> Agent Runner and sandbox
     -> TransferQueue trajectories and rewards
 ```
 

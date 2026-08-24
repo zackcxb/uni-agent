@@ -203,11 +203,11 @@ ray job submit --no-wait --runtime-env $RUNTIME_ENV \
     ++actor_rollout_ref.rollout.agent.agent_loop_manager_class=uni_agent.framework.entry.AgentFrameworkRolloutAdapter \
     ++actor_rollout_ref.rollout.custom.agent_framework.gateway_count=${GATEWAY_COUNT} \
     ++actor_rollout_ref.rollout.custom.agent_framework.log_dir=${AGENT_LOG_DIR} \
-    ++actor_rollout_ref.rollout.custom.agent_framework.task_runners.task.runner_fqn=uni_agent.framework.task_runner.run_task \
-    ++actor_rollout_ref.rollout.custom.agent_framework.task_runners.task.dispatch_mode=ray_task \
-    ++actor_rollout_ref.rollout.custom.agent_framework.task_runners.task.max_concurrent_sessions=${CONCURRENCY} \
-    ++actor_rollout_ref.rollout.custom.agent_framework.task_runners.task.runner_kwargs.task_config_path=${TASK_CONFIG} \
-    ++actor_rollout_ref.rollout.custom.agent_framework.task_runners.task.runner_kwargs.model_name=${SERVED_MODEL_NAME} \
+    ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_fqn=uni_agent.framework.task_runner.run_task \
+    ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.dispatch_mode=ray_task \
+    ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.max_concurrent_sessions=${CONCURRENCY} \
+    ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.task_config_path=${TASK_CONFIG} \
+    ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.model_name=${SERVED_MODEL_NAME} \
     ++actor_rollout_ref.rollout.custom.agent_framework.mask_unfinished_episode=${MASK_UNFINISHED_EPISODE} \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=${gen_tp} \

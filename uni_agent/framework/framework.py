@@ -42,7 +42,7 @@ TrajectoryPostprocessor = Callable[..., list[Trajectory] | Awaitable[list[Trajec
 
 
 @dataclass
-class _TaskRunnerConfig:
+class _RunnerConfig:
     runner_fqn: str
     runner_kwargs: dict[str, object]
     dispatch_mode: str
@@ -63,7 +63,7 @@ class _TaskRunnerConfig:
             raise ValueError(f"session_timeout_seconds must be positive, got {self.session_timeout_seconds}")
 
     @classmethod
-    def from_config(cls, runner_name: object, runner_cfg) -> _TaskRunnerConfig:
+    def from_config(cls, runner_name: object, runner_cfg) -> _RunnerConfig:
         runner_fqn = runner_cfg.get("runner_fqn")
         runner_kwargs = dict(
             OmegaConf.to_container(OmegaConf.create(runner_cfg.get("runner_kwargs", {})), resolve=True) or {}
@@ -73,7 +73,7 @@ class _TaskRunnerConfig:
             tool_config = initialize_tools_from_config(str(tool_config_path))
             if not tool_config:
                 raise ValueError(
-                    f"task_runners.{runner_name}.tool_config_path did not initialize any tools: {tool_config_path}"
+                    f"agent_runners.{runner_name}.tool_config_path did not initialize any tools: {tool_config_path}"
                 )
             runner_kwargs["tool_config"] = tool_config
         dispatch_mode = str(runner_cfg.get("dispatch_mode", "inline_async"))
@@ -91,11 +91,11 @@ class _TaskRunnerConfig:
                 session_timeout_seconds=session_timeout_seconds,
             )
         except ValueError as exc:
-            raise ValueError(f"task_runners.{runner_name}: {exc}") from exc
+            raise ValueError(f"agent_runners.{runner_name}: {exc}") from exc
 
 
-def _materialize_task_runner(runner_fqn: str, runner_kwargs: dict[str, object]):
-    runner = load_class_from_fqn(runner_fqn, description="task runner")
+def _materialize_runner(runner_fqn: str, runner_kwargs: dict[str, object]):
+    runner = load_class_from_fqn(runner_fqn, description="agent runner")
     if isinstance(runner, type):
         return runner(**runner_kwargs)
     if runner_kwargs:
@@ -110,7 +110,7 @@ def _log_scope(log_context: LogContext | None):
 
 
 @ray.remote
-def _run_task_runner_ray_task(
+def _run_agent_runner_ray_task(
     *,
     runner_fqn: str,
     runner_kwargs: dict[str, object],
@@ -121,7 +121,7 @@ def _run_task_runner_ray_task(
     log_context: LogContext | None,
 ) -> TaskResult:
     """Run only the user runner in Ray; parent owns session lifecycle outputs."""
-    runner = _materialize_task_runner(runner_fqn, runner_kwargs)
+    runner = _materialize_runner(runner_fqn, runner_kwargs)
     with _log_scope(log_context):
         return asyncio.run(
             runner(
@@ -311,7 +311,7 @@ class GatewayAgentFramework(AgentFramework):
         self,
         gateway_manager,  # GatewayManager: framework calls create_session/finalize_session/abort_session
         *,
-        task_runner_registry: dict[str, _TaskRunnerConfig],
+        runner_registry: dict[str, _RunnerConfig],
         reward_loop_worker_handles=None,
         processor=None,
         rollout_config=None,
@@ -321,12 +321,12 @@ class GatewayAgentFramework(AgentFramework):
         trajectory_postprocessor_kwargs: dict[str, object] | None = None,
     ):
         self.gateway_manager = gateway_manager
-        self.task_runner_registry = task_runner_registry
+        self.runner_registry = runner_registry
         # Materialize inline runners at construction since they run in-process and may maintain state;
-        # ray_task runners are materialized per-run since they run remotely.
+        # Ray-dispatched runners are materialized per-run since they run remotely.
         self._inline_runners = {
-            runner_name: _materialize_task_runner(runner_config.runner_fqn, runner_config.runner_kwargs)
-            for runner_name, runner_config in task_runner_registry.items()
+            runner_name: _materialize_runner(runner_config.runner_fqn, runner_config.runner_kwargs)
+            for runner_name, runner_config in runner_registry.items()
             if runner_config.dispatch_mode == "inline_async"
         }
         self.reward_loop_worker_handles = list(reward_loop_worker_handles) if reward_loop_worker_handles else None
@@ -352,13 +352,13 @@ class GatewayAgentFramework(AgentFramework):
     ) -> GatewayAgentFramework:
         # TODO(phase-b): switch this to actor_rollout_ref.rollout.agent_framework.*
         af_cfg = OmegaConf.select(config, "actor_rollout_ref.rollout.custom.agent_framework", default={}) or {}
-        task_runner_registry: dict[str, _TaskRunnerConfig] = {}
-        task_runners_cfg = af_cfg.get("task_runners")
-        if not task_runners_cfg:
-            raise ValueError("actor_rollout_ref.rollout.custom.agent_framework.task_runners is required")
+        runner_registry: dict[str, _RunnerConfig] = {}
+        agent_runners_cfg = af_cfg.get("agent_runners")
+        if not agent_runners_cfg:
+            raise ValueError("actor_rollout_ref.rollout.custom.agent_framework.agent_runners is required")
 
-        for runner_name, runner_cfg in task_runners_cfg.items():
-            task_runner_registry[str(runner_name)] = _TaskRunnerConfig.from_config(runner_name, runner_cfg)
+        for runner_name, runner_cfg in agent_runners_cfg.items():
+            runner_registry[str(runner_name)] = _RunnerConfig.from_config(runner_name, runner_cfg)
 
         if "log_dir" in af_cfg:
             configured_log_dir = af_cfg.get("log_dir")
@@ -398,7 +398,7 @@ class GatewayAgentFramework(AgentFramework):
 
         return cls(
             gateway_manager=gateway_manager,
-            task_runner_registry=task_runner_registry,
+            runner_registry=runner_registry,
             reward_loop_worker_handles=reward_loop_worker_handles,
             processor=processor,
             rollout_config=config.actor_rollout_ref.rollout,
@@ -661,19 +661,19 @@ class GatewayAgentFramework(AgentFramework):
             self._runner_semaphores = {}
             self._semaphore_loop = loop
 
-        if len(self.task_runner_registry) == 1:
-            runner_name, runner_config = next(iter(self.task_runner_registry.items()))
+        if len(self.runner_registry) == 1:
+            runner_name, runner_config = next(iter(self.runner_registry.items()))
         else:
             agent_name = sample_fields.get("agent_name")
             if agent_name is None:
-                raise ValueError("agent_name is required when multiple task_runners are configured")
+                raise ValueError("agent_name is required when multiple agent_runners are configured")
             if not isinstance(agent_name, str):
                 raise ValueError(f"agent_name must be a string, got {type(agent_name).__name__}")
             try:
                 runner_name = agent_name
-                runner_config = self.task_runner_registry[runner_name]
+                runner_config = self.runner_registry[runner_name]
             except KeyError as exc:
-                raise ValueError(f"Unknown task runner: {agent_name}") from exc
+                raise ValueError(f"Unknown agent runner: {agent_name}") from exc
 
         runner_cap = runner_config.max_concurrent_sessions
         if runner_cap <= 0:
@@ -711,7 +711,7 @@ class GatewayAgentFramework(AgentFramework):
         session_index: int,
         global_steps: int | None,
         runner_name: str,
-        runner_config: _TaskRunnerConfig,
+        runner_config: _RunnerConfig,
         sampling_params: dict[str, object],
     ) -> tuple[list[Trajectory], dict[str, object]]:
         """Run one AgentRunner episode inside a Framework-created Gateway session."""
@@ -759,7 +759,7 @@ class GatewayAgentFramework(AgentFramework):
                 if runner_config.dispatch_mode == "ray_task":
                     # Ray workers run only the runner. Gateway token truth,
                     # finalization, reward scoring, and TQ writes stay in parent.
-                    object_ref = _run_task_runner_ray_task.remote(
+                    object_ref = _run_agent_runner_ray_task.remote(
                         runner_fqn=runner_config.runner_fqn,
                         runner_kwargs=runner_config.runner_kwargs,
                         raw_prompt=raw_prompt,
@@ -795,7 +795,7 @@ class GatewayAgentFramework(AgentFramework):
                     )
                 if not isinstance(task_result, TaskResult):
                     raise TypeError(
-                        f"Task runner {runner_name!r} must return TaskResult, got {type(task_result).__name__}"
+                        f"Agent runner {runner_name!r} must return TaskResult, got {type(task_result).__name__}"
                     )
                 session_trajectories = await self.gateway_manager.finalize_session(session_id)
                 session_trajectories = _select_session_trajectories(
@@ -843,7 +843,7 @@ class GatewayAgentFramework(AgentFramework):
                 # Preserve Runner rewards outside streaming scoring; TQ training replaces
                 # these rm_scores during its colocated post-rollout reward pass.
                 annotations = [(task_result.reward, {}) for _ in session_trajectories]
-                reward_source = "task_runner"
+                reward_source = "agent_runner"
             else:
                 annotations = None
                 reward_source = None
