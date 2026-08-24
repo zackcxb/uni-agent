@@ -9,7 +9,7 @@
 #
 # which resolves each sample's task from task_config_mini_swe_agent.yaml
 # (agent + sandbox defaults), deep-merges the sample values and the runtime
-# model binding, and returns the reward via report_reward=True.
+# model binding, and returns a typed TaskResult directly to the framework.
 #
 # Usage:
 #   bash examples/mini_swe_agent/run_train.sh
@@ -125,9 +125,7 @@ RUNNER_ARGS=(
     "+actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.session_timeout_seconds=${SESSION_TIMEOUT_SECONDS}"
     "+actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.task_config_path=${TASK_CONFIG}"
     "+actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.model_name=${SERVED_MODEL_NAME}"
-    "+actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.report_reward=True"
     "+actor_rollout_ref.rollout.custom.agent_framework.mask_unfinished_episode=${MASK_UNFINISHED_EPISODE}"
-    "+actor_rollout_ref.rollout.custom.agent_framework.use_reward_loop_worker=False"
 )
 
 # ── OpenYuanrong (remote sandbox) ───────────────────────────────────────
@@ -373,6 +371,9 @@ MAIN_CMD=(
     algorithm.use_kl_in_reward=${USE_KL_IN_REWARD}
     algorithm.kl_ctrl.kl_coef=${KL_COEF}
     algorithm.rollout_correction.bypass_mode=${BY_PASS_MODE}
+    reward.reward_manager.name=dapo
+    reward.custom_reward_function.path=pkg://uni_agent.framework.task_runner
+    reward.custom_reward_function.name=compute_score
     trainer.project_name="${PROJECT_NAME}"
     trainer.experiment_name="${EXPERIMENT_NAME}"
     trainer.logger="${LOGGER}"

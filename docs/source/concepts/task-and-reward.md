@@ -74,7 +74,7 @@ Without `prompt_template`, the dataset/source messages pass through unchanged. T
 
 After Task rendering, `TaskConfig.prompt` is the message list passed to `Agent.run()`. `prompt_template` is an input-only rendering directive and is omitted when Task configs are serialized. In Framework-managed execution, verl uses the source prompt for loader-time token-length checks when overlong-prompt filtering is enabled, makes it available as `raw_prompt` when a configured RewardLoop or judge scoring path is used, and preserves it as metadata in records written to TransferQueue. Task-rendered messages do not replace that source value. The trajectory token tensors are instead built from the Agent's actual model requests captured by the Gateway. Built-in SWE Tasks evaluate from `TaskConfig.metadata`, independently of `raw_prompt`.
 
-Task-rendered messages are not guaranteed to equal a self-rendering Agent's final internal prompt. Such an Agent may apply its own Sandbox-side template, and the current Task Runner cannot observe its final internal messages. `TaskResult` consequently reports episode results only and does not attempt to carry prompt provenance.
+Task-rendered messages are not guaranteed to equal a self-rendering Agent's final internal prompt. Such an Agent may apply its own Sandbox-side template, and the current Agent Runner cannot observe its final internal messages. `TaskResult` consequently reports episode results only and does not attempt to carry prompt provenance.
 
 ## Episode Implementation
 

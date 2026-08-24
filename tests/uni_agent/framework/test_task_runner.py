@@ -129,7 +129,7 @@ async def test_run_task_binds_raw_prompt_to_sample_task_config(monkeypatch, tmp_
 
         async def run(self):
             captured["config"] = self.config
-            return TaskResult(reward=1.0, accuracy=1.0, episode_finished=True)
+            return TaskResult(reward=1.0, accuracy=1.0, finished=True)
 
     monkeypatch.setattr(task_runner_module, "get_task", _FakeTask)
     source_prompt = [{"role": "user", "content": "Canonical source problem"}]
@@ -163,7 +163,7 @@ async def test_run_task_returns_task_result_without_wrapping(monkeypatch):
 
     class _Resolver:
         def resolve(self, sample_config, runtime_model):
-            assert sample_config == {"name": "stub"}
+            assert sample_config["name"] == "stub"
             assert runtime_model["base_url"] == "http://gateway/session/v1"
             return {"name": "stub"}
 
