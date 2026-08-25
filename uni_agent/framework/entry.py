@@ -26,7 +26,7 @@ from verl.utils.import_utils import load_class_from_fqn
 from verl.utils.transferqueue_utils import tq
 from verl.workers.config.model import HFModelConfig
 
-_DEFAULT_FRAMEWORK_CLASS = "uni_agent.framework.framework.OpenAICompatibleAgentFramework"
+_DEFAULT_FRAMEWORK_CLASS = "uni_agent.framework.framework.GatewayAgentFramework"
 
 
 def build_gateway_manager(*, config, llm_client) -> GatewayManager:

@@ -1,8 +1,8 @@
 from .base import AgentFramework
-from .framework import AgentRunner, OpenAICompatibleAgentFramework
+from .framework import AgentRunner, GatewayAgentFramework
 
 __all__ = [
     "AgentFramework",
     "AgentRunner",
-    "OpenAICompatibleAgentFramework",
+    "GatewayAgentFramework",
 ]

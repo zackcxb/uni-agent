@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 class AgentRunner(Protocol):
-    """Callable contract for OpenAI-compatible agent runners."""
+    """Callable contract for an agent episode over a Gateway-owned session."""
 
     async def __call__(
         self,
@@ -293,12 +293,12 @@ def _trajectory_to_reward_dataproto(trajectory, sample_fields):
     return DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
 
 
-class OpenAICompatibleAgentFramework(AgentFramework):
-    """Reference AgentFramework implementation for OpenAI-compatible agent loops.
+class GatewayAgentFramework(AgentFramework):
+    """Reference AgentFramework implementation for Gateway-backed agent loops.
 
-    Each sample in the batch is run as an independent session: the agent
-    communicates with the Gateway via standard ``/v1/chat/completions``
-    requests, and the Gateway collects token-level trajectories.  After
+    Each sample in the batch is run as an independent Gateway session: the agent
+    communicates through the Gateway's provider adapter (OpenAI Chat Completions
+    or Anthropic Messages), and the Gateway collects token-level trajectories. After
     finalization, scoring prefers the reward the runner posted to the session
     (``_score_from_reward_info``); otherwise, if a RewardLoopWorker is configured,
     ``_score_trajectories`` scores the final trajectory and broadcasts the score to all
@@ -351,7 +351,7 @@ class OpenAICompatibleAgentFramework(AgentFramework):
         gateway_manager,
         processor=None,
         reward_loop_worker_handles=None,
-    ) -> OpenAICompatibleAgentFramework:
+    ) -> GatewayAgentFramework:
         # TODO(phase-b): switch this to actor_rollout_ref.rollout.agent_framework.*
         af_cfg = OmegaConf.select(config, "actor_rollout_ref.rollout.custom.agent_framework", default={}) or {}
         runner_registry: dict[str, _RunnerConfig] = {}
@@ -459,13 +459,13 @@ class OpenAICompatibleAgentFramework(AgentFramework):
     async def generate_sequences(self, prompts: TensorDict) -> None:
         """Run rollout-manager generation and write outputs into TransferQueue."""
         if self._rollout_config is None:
-            raise RuntimeError("OpenAICompatibleAgentFramework requires rollout_config for generate_sequences")
+            raise RuntimeError("GatewayAgentFramework requires rollout_config for generate_sequences")
 
         is_validate = bool(tu.get(prompts, "validate", False))
         partition_id = "val" if is_validate else "train"
         global_steps = tu.get(prompts, "global_steps")
         if global_steps is None and not is_validate:
-            raise ValueError("OpenAICompatibleAgentFramework requires prompts['global_steps'] for training")
+            raise ValueError("GatewayAgentFramework requires prompts['global_steps'] for training")
 
         if partition_id == "val":
             val_kwargs = self._rollout_config.get("val_kwargs", {})
@@ -475,9 +475,9 @@ class OpenAICompatibleAgentFramework(AgentFramework):
 
         uids = tu.get(prompts, "uid")
         if uids is None:
-            raise ValueError("OpenAICompatibleAgentFramework requires prompts['uid'] for TransferQueue output")
+            raise ValueError("GatewayAgentFramework requires prompts['uid'] for TransferQueue output")
 
-        stats = await self._run_batch_to_tq(
+        stats = await self._run_batch_rollouts(
             prompts,
             global_steps=global_steps,
             partition_id=partition_id,
@@ -502,7 +502,7 @@ class OpenAICompatibleAgentFramework(AgentFramework):
             )
         return None
 
-    async def _run_batch_to_tq(
+    async def _run_batch_rollouts(
         self,
         prompts: TensorDict,
         *,
@@ -520,7 +520,7 @@ class OpenAICompatibleAgentFramework(AgentFramework):
         tasks = []
         for sample_index in range(len(prompts)):
             tasks.append(
-                self._run_prompt_sessions_to_tq(
+                self._run_prompt_rollouts(
                     sample_fields=self._extract_sample_fields(prompts=prompts, sample_index=sample_index),
                     sample_index=sample_index,
                     global_steps=global_steps,
@@ -558,7 +558,7 @@ class OpenAICompatibleAgentFramework(AgentFramework):
             failure_reasons.extend(outcome["failure_reasons"])
         return stats
 
-    async def _run_prompt_sessions_to_tq(
+    async def _run_prompt_rollouts(
         self,
         *,
         sample_fields: dict[str, object],
@@ -567,9 +567,10 @@ class OpenAICompatibleAgentFramework(AgentFramework):
         partition_id: str,
         num_sessions: int,
     ) -> dict:
+        """Run ``rollout.n`` independent sessions for one prompt and persist their outputs."""
         uid = sample_fields.get("uid")
         if uid is None:
-            raise ValueError("OpenAICompatibleAgentFramework requires prompts['uid'] for TransferQueue output")
+            raise ValueError("GatewayAgentFramework requires prompts['uid'] for TransferQueue output")
         uid = str(uid)
         sampling_params = self._build_session_sampling_params(
             partition_id=partition_id,
@@ -579,7 +580,7 @@ class OpenAICompatibleAgentFramework(AgentFramework):
         # Prompt layer: rollout.n sessions race independently for the same uid.
         # Successful sessions are written to TQ; failed sessions only affect this uid's stats.
         tasks = [
-            self._run_session_with_concurrency_limit(
+            self._run_agent_episode_with_concurrency_limit(
                 sample_fields=sample_fields,
                 sample_index=sample_index,
                 session_index=session_index,
@@ -648,7 +649,7 @@ class OpenAICompatibleAgentFramework(AgentFramework):
             "failure_reasons": failure_reasons,
         }
 
-    async def _run_session_with_concurrency_limit(
+    async def _run_agent_episode_with_concurrency_limit(
         self,
         *,
         sample_fields: dict[str, object],
@@ -681,7 +682,7 @@ class OpenAICompatibleAgentFramework(AgentFramework):
 
         runner_cap = runner_config.max_concurrent_sessions
         if runner_cap <= 0:
-            return await self._run_session(
+            return await self._run_agent_episode(
                 sample_fields=sample_fields,
                 sample_index=sample_index,
                 session_index=session_index,
@@ -697,7 +698,7 @@ class OpenAICompatibleAgentFramework(AgentFramework):
             self._runner_semaphores[runner_name] = runner_semaphore
 
         async with runner_semaphore:
-            return await self._run_session(
+            return await self._run_agent_episode(
                 sample_fields=sample_fields,
                 sample_index=sample_index,
                 session_index=session_index,
@@ -707,7 +708,7 @@ class OpenAICompatibleAgentFramework(AgentFramework):
                 sampling_params=sampling_params,
             )
 
-    async def _run_session(
+    async def _run_agent_episode(
         self,
         *,
         sample_fields: dict[str, object],
@@ -718,7 +719,7 @@ class OpenAICompatibleAgentFramework(AgentFramework):
         runner_config: _RunnerConfig,
         sampling_params: dict[str, object],
     ) -> tuple[list[Trajectory], dict[str, object]]:
-        """Run one gateway session lifecycle and return finalized trajectories."""
+        """Run one AgentRunner episode inside a Framework-created Gateway session."""
         session_id = f"session-sample-{sample_index}-rollout-{session_index}-{uuid4().hex}"
         uid = str(sample_fields.get("uid", ""))
         session_trace = agent_loop_session(

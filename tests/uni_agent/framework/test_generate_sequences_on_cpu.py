@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from tests.uni_agent.support import logging_runner
-from uni_agent.framework.framework import OpenAICompatibleAgentFramework, _align_routed_experts
+from uni_agent.framework.framework import GatewayAgentFramework, _align_routed_experts
 from uni_agent.gateway.session import SessionHandle, Trajectory
 from verl.utils import tensordict_utils as tu
 
@@ -150,7 +150,7 @@ async def _build_framework_with_agent_runners(
             }
         }
     )
-    return OpenAICompatibleAgentFramework.from_config(
+    return GatewayAgentFramework.from_config(
         config=config,
         gateway_manager=gateway_manager,
         reward_loop_worker_handles=reward_loop_worker_handles,
@@ -359,12 +359,12 @@ def _trajectory(
 
 
 def _install_fake_score(monkeypatch, *, score_from_sample_fields=None, default_score=1.0):
-    """Replace OpenAICompatibleAgentFramework._score_trajectories with a fake.
+    """Replace GatewayAgentFramework._score_trajectories with a fake.
 
     Keeps ``generate_sequences`` tests focused on TQ output by returning the
     same deterministic score for every trajectory in the session.
     """
-    from uni_agent.framework.framework import OpenAICompatibleAgentFramework
+    from uni_agent.framework.framework import GatewayAgentFramework
 
     async def fake_score(self, trajectories, sample_fields):
         if score_from_sample_fields is not None:
@@ -373,7 +373,7 @@ def _install_fake_score(monkeypatch, *, score_from_sample_fields=None, default_s
             score = float(default_score)
         return [(score, {})] * len(trajectories)
 
-    monkeypatch.setattr(OpenAICompatibleAgentFramework, "_score_trajectories", fake_score)
+    monkeypatch.setattr(GatewayAgentFramework, "_score_trajectories", fake_score)
 
 
 @pytest.mark.asyncio
