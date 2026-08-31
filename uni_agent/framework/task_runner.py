@@ -97,6 +97,7 @@ async def run_task(
     task_config_path: str | None = None,
     api_key: str = "EMPTY",
     model_name: str | None = None,
+    **_: Any,
 ) -> TaskResult:
     """Resolve the sample's task, run it against ``session``, and return its result.
 

@@ -153,7 +153,7 @@ async def test_run_task_binds_raw_prompt_to_sample_task_config(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
-async def test_run_task_returns_task_result_without_wrapping(monkeypatch):
+async def test_run_task_returns_task_result_while_ignoring_framework_tool_config(monkeypatch):
     task_result = TaskResult(
         reward=0.5,
         accuracy=1.0,
@@ -177,6 +177,7 @@ async def test_run_task_returns_task_result_without_wrapping(monkeypatch):
     result = await run_task(
         session=SessionHandle(session_id="session", base_url="http://gateway/session/v1"),
         tools_kwargs={"task": {"name": "stub"}},
+        tool_config=[object()],
     )
 
     assert result is task_result
