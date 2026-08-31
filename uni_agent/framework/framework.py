@@ -352,6 +352,17 @@ class GatewayAgentFramework(AgentFramework):
     ) -> GatewayAgentFramework:
         # TODO(phase-b): switch this to actor_rollout_ref.rollout.agent_framework.*
         af_cfg = OmegaConf.select(config, "actor_rollout_ref.rollout.custom.agent_framework", default={}) or {}
+        if (
+            OmegaConf.select(config, "reward.reward_model.enable", default=False) is True
+            and OmegaConf.select(config, "reward.reward_model.enable_resource_pool", default=True) is False
+            and OmegaConf.select(config, "reward.custom_reward_function.path", default=None) is not None
+        ):
+            logger.warning(
+                "Detected a custom reward function with a colocated reward model. The colocated reward path "
+                "does not receive AgentRunner TaskResult/runner_reward_info and replaces Runner-provided "
+                "rm_scores, so hybrid scoring such as model score plus task reward is not supported. Use "
+                "separate reward-model resources or a future VERL TransferQueue contract extension."
+            )
         runner_registry: dict[str, _RunnerConfig] = {}
         agent_runners_cfg = af_cfg.get("agent_runners")
         if not agent_runners_cfg:
@@ -413,7 +424,15 @@ class GatewayAgentFramework(AgentFramework):
         trajectories: list[Trajectory],
     ) -> list[Trajectory]:
         """Apply the optional sync/async postprocessor and validate its result."""
-        expected_reward_info = deepcopy(trajectories[-1].reward_info) if trajectories else {}
+        expected_reward_fields = (
+            (
+                trajectories[-1].finished,
+                trajectories[-1].reward_score,
+                deepcopy(trajectories[-1].reward_metrics),
+            )
+            if trajectories
+            else (None, None, {})
+        )
         result = self._trajectory_postprocessor(tuple(trajectories), **self._trajectory_postprocessor_kwargs)
         if inspect.isawaitable(result):
             result = await result
@@ -422,8 +441,11 @@ class GatewayAgentFramework(AgentFramework):
             raise TypeError(f"trajectory postprocessor must return list[Trajectory], got {type(result).__name__}")
         if any(not isinstance(trajectory, Trajectory) for trajectory in result):
             raise TypeError("trajectory postprocessor returned a non-Trajectory item")
-        if any(trajectory.reward_info != expected_reward_info for trajectory in result):
-            raise ValueError("trajectory postprocessor must preserve finalized reward_info")
+        if any(
+            (trajectory.finished, trajectory.reward_score, trajectory.reward_metrics) != expected_reward_fields
+            for trajectory in result
+        ):
+            raise ValueError("trajectory postprocessor must preserve finalized reward fields")
         return result
 
     def _build_session_sampling_params(
@@ -879,7 +901,7 @@ class GatewayAgentFramework(AgentFramework):
                 status="success",
                 trajectories=result_trajectories,
                 reward_source=reward_source,
-                finished=result_trajectories[0].reward_info.get("finished") if result_trajectories else None,
+                finished=result_trajectories[0].finished if result_trajectories else None,
             )
             return result_trajectories, sample_fields
 

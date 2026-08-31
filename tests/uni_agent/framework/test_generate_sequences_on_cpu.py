@@ -43,8 +43,8 @@ def _invalid_item_trajectory_postprocessor(trajectories):
     return ["not-a-trajectory"]
 
 
-def _dropping_reward_info_postprocessor(trajectories):
-    return [replace(trajectories[-1], reward_info={})]
+def _dropping_reward_fields_postprocessor(trajectories):
+    return [replace(trajectories[-1], reward_score=None)]
 
 
 async def _config_recording_runner(*, raw_prompt, session, sample_index, marker=None, **kwargs):
@@ -117,6 +117,7 @@ async def _build_framework_with_agent_runners(
     mask_unfinished_episode: bool = False,
     trajectory_postprocessor_fqn: str | None = None,
     trajectory_postprocessor_kwargs: object | None = None,
+    reward_config: dict[str, object] | None = None,
 ):
     from omegaconf import OmegaConf
 
@@ -131,31 +132,70 @@ async def _build_framework_with_agent_runners(
     if trajectory_postprocessor_kwargs is not None:
         agent_framework_cfg["trajectory_postprocessor_kwargs"] = trajectory_postprocessor_kwargs
 
-    config = OmegaConf.create(
-        {
-            "actor_rollout_ref": {
-                "rollout": {
-                    "n": n,
-                    "temperature": 0.7,
-                    "top_p": 0.8,
-                    "top_k": 20,
-                    "calculate_log_probs": True,
-                    "val_kwargs": {
-                        "n": val_n,
-                        "temperature": 0,
-                        "top_p": 0.95,
-                        "top_k": -1,
-                    },
-                    "custom": {"agent_framework": agent_framework_cfg},
-                }
+    config_dict: dict[str, object] = {
+        "actor_rollout_ref": {
+            "rollout": {
+                "n": n,
+                "temperature": 0.7,
+                "top_p": 0.8,
+                "top_k": 20,
+                "calculate_log_probs": True,
+                "val_kwargs": {
+                    "n": val_n,
+                    "temperature": 0,
+                    "top_p": 0.95,
+                    "top_k": -1,
+                },
+                "custom": {"agent_framework": agent_framework_cfg},
             }
         }
-    )
+    }
+    if reward_config is not None:
+        config_dict["reward"] = reward_config
+    config = OmegaConf.create(config_dict)
     return GatewayAgentFramework.from_config(
         config=config,
         gateway_manager=gateway_manager,
         reward_loop_worker_handles=reward_loop_worker_handles,
     )
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reward_model_enabled", "enable_resource_pool", "custom_reward_path", "expected_warnings"),
+    [
+        (True, False, "pkg://custom_reward.py", 1),
+        (False, False, "pkg://custom_reward.py", 0),
+        (True, True, "pkg://custom_reward.py", 0),
+        (True, False, None, 0),
+    ],
+)
+async def test_from_config_warns_for_unsupported_colocated_hybrid_reward(
+    caplog,
+    reward_model_enabled,
+    enable_resource_pool,
+    custom_reward_path,
+    expected_warnings,
+):
+    reward_config = {
+        "reward_model": {
+            "enable": reward_model_enabled,
+            "enable_resource_pool": enable_resource_pool,
+        },
+        "custom_reward_function": {"path": custom_reward_path},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="uni_agent.framework.framework"):
+        await _build_framework_with_agent_runners(
+            agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
+            gateway_manager=_FakeGatewayManager({}),
+            reward_config=reward_config,
+        )
+
+    warnings = [record for record in caplog.records if "colocated reward model" in record.getMessage()]
+    assert len(warnings) == expected_warnings
 
 
 @pytest.mark.cpu
@@ -371,7 +411,7 @@ def _install_fake_score(monkeypatch, *, score_from_sample_fields=None, default_s
     """
     from uni_agent.framework.framework import GatewayAgentFramework
 
-    async def fake_score(self, trajectories, sample_fields):
+    async def fake_score(self, trajectories, sample_fields, task_result):
         if score_from_sample_fields is not None:
             score = float(score_from_sample_fields(sample_fields))
         else:
@@ -379,6 +419,8 @@ def _install_fake_score(monkeypatch, *, score_from_sample_fields=None, default_s
         return [(score, {})] * len(trajectories)
 
     monkeypatch.setattr(GatewayAgentFramework, "_score_trajectories", fake_score)
+
+
 @pytest.mark.cpu
 @pytest.mark.level0
 @pytest.mark.asyncio
@@ -451,7 +493,7 @@ async def test_framework_applies_managed_runner_task_result():
         gateway_manager=runtime,
     )
 
-    trajectories, _ = await framework._run_session(
+    trajectories, _ = await framework._run_agent_episode(
         sample_fields={"raw_prompt": [], "uid": "uid-0"},
         sample_index=0,
         session_index=0,
@@ -479,7 +521,7 @@ async def test_ray_agent_runner_returns_task_result():
         gateway_manager=runtime,
     )
 
-    trajectories, _ = await framework._run_session(
+    trajectories, _ = await framework._run_agent_episode(
         sample_fields={"raw_prompt": [], "uid": "uid-0"},
         sample_index=0,
         session_index=0,
@@ -506,7 +548,7 @@ async def test_framework_rejects_legacy_runner_result():
     )
 
     with pytest.raises(TypeError, match="must return TaskResult"):
-        await framework._run_session(
+        await framework._run_agent_episode(
             sample_fields={"raw_prompt": [], "uid": "uid-0"},
             sample_index=0,
             session_index=0,
@@ -529,7 +571,7 @@ async def test_framework_rejects_missing_agent_runner_result():
     )
 
     with pytest.raises(TypeError, match="Agent runner 'runner' must return TaskResult"):
-        await framework._run_session(
+        await framework._run_agent_episode(
             sample_fields={"raw_prompt": [], "uid": "uid-0"},
             sample_index=0,
             session_index=0,
@@ -570,7 +612,7 @@ async def test_reward_worker_processes_runner_reward_info_and_owns_final_metrics
         reward_loop_worker_handles=[worker],
     )
 
-    trajectories, _ = await framework._run_session(
+    trajectories, _ = await framework._run_agent_episode(
         sample_fields={"raw_prompt": [], "uid": "uid-0", "extra_info": {"index": 3}},
         sample_index=0,
         session_index=0,
@@ -623,7 +665,7 @@ async def test_reward_worker_rejects_invalid_metrics(reward_extra_info, error_ma
     )
 
     with pytest.raises(ValueError, match=error_match):
-        await framework._run_session(
+        await framework._run_agent_episode(
             sample_fields={"raw_prompt": [], "uid": "uid-0"},
             sample_index=0,
             session_index=0,
@@ -651,7 +693,7 @@ async def test_reward_worker_rejects_non_finite_score():
     )
 
     with pytest.raises(ValueError, match="reward_score must be finite"):
-        await framework._run_session(
+        await framework._run_agent_episode(
             sample_fields={"raw_prompt": [], "uid": "uid-0"},
             sample_index=0,
             session_index=0,
@@ -673,7 +715,7 @@ async def test_metrics_survive_without_any_reward_source():
         gateway_manager=runtime,
     )
 
-    trajectories, _ = await framework._run_session(
+    trajectories, _ = await framework._run_agent_episode(
         sample_fields={"raw_prompt": [], "uid": "uid-0"},
         sample_index=0,
         session_index=0,
@@ -1243,17 +1285,18 @@ async def test_trajectory_postprocessor_applies_kwargs_before_scoring_and_tq(mon
     framework = await _build_framework_with_agent_runners(
         agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
         gateway_manager=runtime,
+        reward_loop_worker_handles=["sentinel"],
         trajectory_postprocessor_fqn=f"{__name__}._recording_trajectory_postprocessor",
         trajectory_postprocessor_kwargs={"policy": {"thresholds": [1, 2]}},
     )
 
     scored_responses = []
 
-    def score_processed_trajectories(trajectories):
+    async def score_processed_trajectories(trajectories, sample_fields, task_result):
         scored_responses.extend(trajectory.response_ids for trajectory in trajectories)
         return [(0.5, {}) for _ in trajectories]
 
-    monkeypatch.setattr(framework, "_score_from_reward_info", score_processed_trajectories)
+    monkeypatch.setattr(framework, "_score_trajectories", score_processed_trajectories)
 
     await framework.generate_sequences(_build_prompts(count=1, global_steps=8))
 
@@ -1320,15 +1363,17 @@ async def test_trajectory_postprocessor_reports_invalid_extensions(
 @pytest.mark.cpu
 @pytest.mark.level0
 @pytest.mark.asyncio
-async def test_trajectory_postprocessor_rejects_dropped_reward_info():
+async def test_trajectory_postprocessor_rejects_dropped_reward_fields():
     framework = await _build_framework_with_agent_runners(
         agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
         gateway_manager=_FakeGatewayManager({}),
-        trajectory_postprocessor_fqn=f"{__name__}._dropping_reward_info_postprocessor",
+        trajectory_postprocessor_fqn=f"{__name__}._dropping_reward_fields_postprocessor",
     )
 
-    with pytest.raises(ValueError, match="must preserve finalized reward_info"):
-        await framework._apply_trajectory_postprocessor([_trajectory(reward_info={"reward": 0.5, "finished": False})])
+    with pytest.raises(ValueError, match="must preserve finalized reward fields"):
+        await framework._apply_trajectory_postprocessor(
+            [_trajectory(reward_score=0.5, reward_metrics={"acc": 1.0}, finished=False)]
+        )
 
 
 @pytest.mark.cpu

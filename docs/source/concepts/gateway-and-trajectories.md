@@ -197,7 +197,9 @@ the Runner payload with trajectory-dependent signals.
 Without streaming handles, a missing Runner reward leaves `rm_scores` at zero
 and the Framework logs this at info level. A TQ training reward pass does not
 receive `runner_reward_info`, so its scorer must operate on the regular posthoc
-reward inputs.
+reward inputs. When a custom reward function is configured with a colocated
+reward model, the Framework warns that hybrid scoring with the Runner result is
+not supported by the current TQ contract.
 
 Process rewards are not implemented by this interface. A future token-level
 reward channel must be a separate sibling of `reward_metrics`, because lists or
