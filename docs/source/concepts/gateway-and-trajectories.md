@@ -166,10 +166,11 @@ How the Agent Framework consumes the result depends on the reward topology:
 - With streaming Reward Loop Worker handles, the Worker always processes the finalized trajectory, even when the Runner returned a reward. The Framework exposes the Runner result under `extra_info["runner_reward_info"]`; the Worker owns the final reward and validation metrics.
 - Without streaming handles, the Framework retains the Runner reward and accuracy and writes a sparse token-level `rm_scores` tensor with the reward on the final token. This is the final result for standalone/inference. TQ training subsequently runs its colocated reward pass and replaces `rm_scores`.
 
-The colocated TQ pass currently replaces only `rm_scores`; validation continues
-to read the Runner accuracy already stored under
-`extra_fields["reward_extra_info"]`. Use streaming handles when Worker-produced
-validation metrics must be the canonical output.
+The colocated TQ pass replaces `rm_scores` and writes scorer metrics as top-level
+TQ fields, while validation currently reads metrics only from the pre-existing
+`extra_fields["reward_extra_info"]`. Consequently, Runner metrics remain visible
+and colocated scorer metrics are not included in validation aggregation. Use
+streaming handles when Worker-produced validation metrics must be canonical.
 
 Validation metrics are serialized under `extra_fields["reward_extra_info"]`, matching the trainer's TQ contract.
 Custom validation scorers should return a stable metric-key set across samples; downstream aggregation may fail when only some samples omit a key.
@@ -192,7 +193,9 @@ For Agent Runners that always return a reward, the built-in
 `uni_agent.framework.task_runner.compute_score` scorer passes that reward and its
 accuracy through the streaming Worker. Configure it through verl's existing
 `reward.custom_reward_function` interface. Custom scorers can instead combine
-the Runner payload with trajectory-dependent signals.
+the Runner payload with trajectory-dependent signals. When streaming handles
+exist and a Runner returns a reward without a custom scorer configured, the
+Framework warns once that verl's default scorer will determine the final reward.
 
 Without streaming handles, a missing Runner reward leaves `rm_scores` at zero
 and the Framework logs this at info level. A TQ training reward pass does not
@@ -201,49 +204,10 @@ reward inputs. When a custom reward function is configured with a colocated
 reward model, the Framework warns that hybrid scoring with the Runner result is
 not supported by the current TQ contract.
 
-Process rewards are not implemented by this interface. A future token-level
-reward channel must be a separate sibling of `reward_metrics`, because lists or
-token arrays are not valid validation metrics.
-
-### Migrating custom Runners
-
-The old Gateway reward endpoint and `report_reward` option were removed. A
-managed Runner must return its annotations directly:
-
-```python
-from uni_agent.tasks import TaskResult
-
-
-async def my_runner(*, session, raw_prompt, sample_index, **kwargs):
-    # Run the Agent against session.base_url, then evaluate the episode.
-    return TaskResult(
-        reward=score,
-        accuracy=accuracy,
-        finished=completed_normally,
-        extra_info={"case_id": case_id},
-    )
-```
-
-Remove `reward_info_url`, HTTP posts to `/reward_info`, and
-`runner_kwargs.report_reward` from custom integrations. Every successful Agent
-Runner call must return `TaskResult`; use `TaskResult(reward=None)` when it does
-not provide a Runner reward. Exceptions represent failed sessions.
-
-The related type migrations are:
-
-- `Trajectory.reward_info["reward"]` -> `Trajectory.reward_score`.
-- `Trajectory.reward_info["finished"]` -> `Trajectory.finished`.
-- Other scalar validation entries in `Trajectory.reward_info` ->
-  `Trajectory.reward_metrics`.
-
-Gateway-finalized trajectories start with these annotation fields unset. Code
-that calls the Gateway directly must not expect reward annotations until an
-Agent Framework or another explicit downstream owner attaches them.
-
-Uni-Agent does not currently expose a result endpoint for independently hosted
-online Agents. Such an integration should use an authenticated adapter that
-normalizes its response to `TaskResult`, rather than restoring the mixed
-Gateway reward dictionary.
+The current `TaskResult` and Reward Loop Worker integration supports scalar
+episode rewards only. verl can train from token-level reward tensors, but
+producing process rewards through a Worker requires a separate token- or
+step-aligned output contract rather than placing arrays in validation metrics.
 
 ## TransferQueue
 

@@ -313,6 +313,7 @@ class GatewayAgentFramework(AgentFramework):
         *,
         runner_registry: dict[str, _RunnerConfig],
         reward_loop_worker_handles=None,
+        custom_reward_function_configured: bool = False,
         processor=None,
         rollout_config=None,
         log_dir: str | None = None,
@@ -330,6 +331,8 @@ class GatewayAgentFramework(AgentFramework):
             if runner_config.dispatch_mode == "inline_async"
         }
         self.reward_loop_worker_handles = list(reward_loop_worker_handles) if reward_loop_worker_handles else None
+        self._custom_reward_function_configured = custom_reward_function_configured
+        self._warned_unconsumed_runner_reward = False
         if self.reward_loop_worker_handles is None:
             logger.info("No streaming reward worker handles; using the non-streaming reward path")
         self._processor = processor
@@ -352,10 +355,15 @@ class GatewayAgentFramework(AgentFramework):
     ) -> GatewayAgentFramework:
         # TODO(phase-b): switch this to actor_rollout_ref.rollout.agent_framework.*
         af_cfg = OmegaConf.select(config, "actor_rollout_ref.rollout.custom.agent_framework", default={}) or {}
+        reward_model_enabled = OmegaConf.select(config, "reward.reward_model.enable", default=False)
+        reward_model_uses_separate_resources = OmegaConf.select(
+            config, "reward.reward_model.enable_resource_pool", default=True
+        )
+        custom_reward_function_path = OmegaConf.select(config, "reward.custom_reward_function.path", default=None)
         if (
-            OmegaConf.select(config, "reward.reward_model.enable", default=False) is True
-            and OmegaConf.select(config, "reward.reward_model.enable_resource_pool", default=True) is False
-            and OmegaConf.select(config, "reward.custom_reward_function.path", default=None) is not None
+            reward_model_enabled is True
+            and reward_model_uses_separate_resources is False
+            and custom_reward_function_path is not None
         ):
             logger.warning(
                 "Detected a custom reward function with a colocated reward model. The colocated reward path "
@@ -411,6 +419,7 @@ class GatewayAgentFramework(AgentFramework):
             gateway_manager=gateway_manager,
             runner_registry=runner_registry,
             reward_loop_worker_handles=reward_loop_worker_handles,
+            custom_reward_function_configured=custom_reward_function_path is not None,
             processor=processor,
             rollout_config=config.actor_rollout_ref.rollout,
             log_dir=log_dir,
@@ -855,6 +864,19 @@ class GatewayAgentFramework(AgentFramework):
                 return session_trajectories, sample_fields
 
             if self.reward_loop_worker_handles:
+                if (
+                    task_result.reward is not None
+                    and not self._custom_reward_function_configured
+                    and not self._warned_unconsumed_runner_reward
+                ):
+                    self._warned_unconsumed_runner_reward = True
+                    logger.warning(
+                        "AgentRunner returned a reward, but the configured streaming RewardLoopWorker does not "
+                        "automatically consume AgentRunner rewards and reward.custom_reward_function.path is not "
+                        "set; the default scorer will determine the final reward. Configure "
+                        "uni_agent.framework.task_runner.compute_score to pass the Runner reward through, or "
+                        "provide a custom scorer that consumes extra_info['runner_reward_info']."
+                    )
                 annotations = await self._score_trajectories(
                     session_trajectories,
                     sample_fields,

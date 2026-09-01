@@ -638,6 +638,66 @@ async def test_reward_worker_processes_runner_reward_info_and_owns_final_metrics
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("runner_reward", "custom_reward_path", "expected_warnings"),
+    [
+        (0.5, None, 1),
+        (None, None, 0),
+        (0.5, "pkg://custom_reward.py", 0),
+    ],
+)
+async def test_streaming_worker_warns_once_when_no_custom_scorer_consumes_runner_reward(
+    monkeypatch,
+    runner_reward,
+    custom_reward_path,
+    expected_warnings,
+):
+    class _ComputeScoreRemote:
+        async def remote(self, data):
+            return {"reward_score": 0.25}
+
+    class _Worker:
+        compute_score = _ComputeScoreRemote()
+
+    async def result_runner(**kwargs):
+        return TaskResult(reward=runner_reward)
+
+    runtime = _FakeGatewayManager(
+        {
+            "session-sample-0-rollout-0": [_trajectory()],
+            "session-sample-1-rollout-0": [_trajectory()],
+        }
+    )
+    framework = await _build_framework_with_agent_runners(
+        agent_runners={"runner": _inline_runner_config(result_runner)},
+        gateway_manager=runtime,
+        reward_loop_worker_handles=[_Worker()],
+        reward_config={"custom_reward_function": {"path": custom_reward_path}},
+    )
+
+    warning_messages = []
+    monkeypatch.setattr(
+        "uni_agent.framework.framework.logger.warning",
+        lambda message, *args: warning_messages.append(message % args if args else message),
+    )
+    for sample_index in range(2):
+        await framework._run_agent_episode(
+            sample_fields={"raw_prompt": [], "uid": f"uid-{sample_index}"},
+            sample_index=sample_index,
+            session_index=0,
+            global_steps=7,
+            runner_name="runner",
+            runner_config=framework.runner_registry["runner"],
+            sampling_params={},
+        )
+
+    warnings = [
+        message for message in warning_messages if "does not automatically consume AgentRunner rewards" in message
+    ]
+    assert len(warnings) == expected_warnings
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("reward_extra_info", "error_match"),
     [
         ([], "reward_extra_info must be a dict"),
