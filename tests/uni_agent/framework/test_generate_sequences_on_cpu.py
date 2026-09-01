@@ -509,10 +509,9 @@ async def test_ray_agent_runner_returns_task_result():
 @pytest.mark.cpu
 @pytest.mark.level0
 @pytest.mark.asyncio
-@pytest.mark.parametrize("runner_result", [{"reward": 0.5, "finished": True}, None], ids=["mapping", "none"])
-async def test_framework_rejects_invalid_agent_runner_result(runner_result):
+async def test_framework_rejects_invalid_agent_runner_result():
     async def invalid_result_runner(**kwargs):
-        return runner_result
+        return {"reward": 0.5, "finished": True}
 
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
     framework = await _build_framework_with_agent_runners(
@@ -530,6 +529,49 @@ async def test_framework_rejects_invalid_agent_runner_result(runner_result):
             runner_config=framework.runner_registry["runner"],
             sampling_params={},
         )
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+@pytest.mark.asyncio
+async def test_none_agent_runner_result_uses_empty_task_result_for_trajectory_scoring():
+    class _ComputeScoreRemote:
+        def __init__(self):
+            self.calls = []
+
+        async def remote(self, data):
+            self.calls.append(data)
+            return {"reward_score": 0.42, "reward_extra_info": {"trajectory_score": 0.42}}
+
+    class _Worker:
+        def __init__(self):
+            self.compute_score = _ComputeScoreRemote()
+
+    async def trajectory_only_runner(**kwargs):
+        pass
+
+    worker = _Worker()
+    runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
+    framework = await _build_framework_with_agent_runners(
+        agent_runners={"runner": _inline_runner_config(trajectory_only_runner)},
+        gateway_manager=runtime,
+        reward_loop_worker_handles=[worker],
+    )
+
+    trajectories, _ = await framework._run_agent_episode(
+        sample_fields={"raw_prompt": [], "uid": "uid-0"},
+        sample_index=0,
+        session_index=0,
+        global_steps=7,
+        runner_name="runner",
+        runner_config=framework.runner_registry["runner"],
+        sampling_params={},
+    )
+
+    runner_reward_info = worker.compute_score.calls[0].non_tensor_batch["extra_info"][0]["runner_reward_info"]
+    assert runner_reward_info == {"reward": None, "metrics": {}, "reward_context": {}}
+    assert trajectories[0].reward_score == 0.42
+    assert trajectories[0].reward_metrics == {"trajectory_score": 0.42}
 
 
 @pytest.mark.cpu

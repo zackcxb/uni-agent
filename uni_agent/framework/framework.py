@@ -119,7 +119,7 @@ def _run_agent_runner_ray_task(
     sample_index: int,
     tools_kwargs: object | None,
     log_context: LogContext | None,
-) -> TaskResult:
+) -> TaskResult | None:
     """Run only the user runner in Ray; parent owns session lifecycle outputs."""
     runner = _materialize_runner(runner_fqn, runner_kwargs)
     with _log_scope(log_context):
@@ -824,9 +824,11 @@ class GatewayAgentFramework(AgentFramework):
                         sample_index=sample_index,
                         **({"tools_kwargs": tools_kwargs} if tools_kwargs is not None else {}),
                     )
-                if not isinstance(task_result, TaskResult):
+                if task_result is None:
+                    task_result = TaskResult()
+                elif not isinstance(task_result, TaskResult):
                     raise TypeError(
-                        f"Agent runner {runner_name!r} must return TaskResult, got {type(task_result).__name__}"
+                        f"Agent runner {runner_name!r} must return TaskResult or None, got {type(task_result).__name__}"
                     )
                 session_trajectories = await self.gateway_manager.finalize_session(session_id)
                 session_trajectories = _select_session_trajectories(

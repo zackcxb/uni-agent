@@ -155,7 +155,9 @@ becomes the validation metric `acc`; `extra_info` becomes the structured
 `runner_reward_info.reward_context` payload and is not aggregated as a metric. When streaming Reward Loop
 Worker handles are available, the Framework passes the complete Runner result
 under `extra_info["runner_reward_info"]` and the Worker's scorer decides how to
-use it. Custom Agent Runners return the same `TaskResult` contract.
+use it. Custom Agent Runners return `TaskResult` when they provide episode
+annotations. A trajectory-only Runner may return `None`, which the Framework
+normalizes to an empty `TaskResult()` before trajectory scoring.
 
 `TaskResult.finished` is factual episode metadata copied from
 `AgentResult.finished`; it does not decide whether the trajectory contributes to

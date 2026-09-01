@@ -37,7 +37,7 @@ For each rollout session, the Agent Framework:
 4. The runner injects the session endpoint into `agent.model`.
 5. The Agent sends OpenAI Chat Completions or Anthropic Messages requests to the session URL.
 6. The Gateway forwards tokenized requests to the verl rollout engine.
-7. The managed Agent Runner returns a `TaskResult` to the Framework.
+7. The managed Agent Runner returns a `TaskResult`, or `None` when it provides no episode annotations.
 8. The Framework finalizes the session, attaches reward/status/metrics, and writes trajectories to TransferQueue.
 
 The model-facing endpoints are:
@@ -280,7 +280,7 @@ Important knobs include:
 Customize the layer that owns the behavior:
 
 - Implement an Agent Runner to launch a different workload against a Gateway session.
-- Return `TaskResult` from a managed Agent Runner; do not write reward data into Gateway routes.
+- Return `TaskResult` from a managed Agent Runner when it provides episode annotations; a trajectory-only Runner may return `None`.
 - Add a Gateway adapter for a new model API wire format.
 - Customize Task, Agent, Tool, and Sandbox behavior through their registries.
 - Implement a trajectory postprocessor for use-case-specific filtering or
