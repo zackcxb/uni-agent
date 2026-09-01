@@ -1,5 +1,4 @@
-from .base import AgentFramework
-from .contracts import AgentRunner
+from .base import AgentFramework, AgentRunner
 from .framework import GatewayAgentFramework
 
 __all__ = [
