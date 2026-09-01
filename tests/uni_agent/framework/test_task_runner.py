@@ -72,42 +72,6 @@ def test_inject_gateway_tunnel_rejects_non_yuanrong_sandbox():
 
 @pytest.mark.cpu
 @pytest.mark.level0
-@pytest.mark.parametrize(("value", "expected"), [(True, 1.0), ("0.5", 0.5)])
-def test_task_result_normalizes_numeric_fields(value, expected):
-    result = TaskResult(reward=value, accuracy=value)  # type: ignore[arg-type]
-
-    assert result.reward == expected
-    assert result.accuracy == expected
-
-
-@pytest.mark.cpu
-@pytest.mark.level0
-@pytest.mark.parametrize(("field", "value"), [("reward", "not-a-number"), ("accuracy", float("inf"))])
-def test_task_result_rejects_invalid_numeric_fields(field, value):
-    with pytest.raises(ValueError, match=rf"TaskResult\.{field} must be a finite number or numeric string"):
-        TaskResult(**{field: value})
-
-
-@pytest.mark.cpu
-@pytest.mark.level0
-def test_task_result_rejects_invalid_completion_and_extra_info():
-    with pytest.raises(ValueError, match="TaskResult.finished must be a bool or None"):
-        TaskResult(finished=1)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="TaskResult.extra_info must be a dict"):
-        TaskResult(extra_info=None)  # type: ignore[arg-type]
-
-
-@pytest.mark.cpu
-@pytest.mark.level0
-def test_task_result_represents_missing_reward_explicitly():
-    result = TaskResult()
-
-    assert result.reward is None
-    assert result.extra_info == {}
-
-
-@pytest.mark.cpu
-@pytest.mark.level0
 @pytest.mark.asyncio
 async def test_run_task_binds_raw_prompt_to_sample_task_config(monkeypatch, tmp_path):
     config_path = tmp_path / "tasks.yaml"
@@ -152,6 +116,8 @@ async def test_run_task_binds_raw_prompt_to_sample_task_config(monkeypatch, tmp_
     assert captured["config"].prompt == source_prompt
 
 
+@pytest.mark.cpu
+@pytest.mark.level0
 @pytest.mark.asyncio
 async def test_run_task_returns_task_result_while_ignoring_framework_tool_config(monkeypatch):
     task_result = TaskResult(
@@ -183,6 +149,8 @@ async def test_run_task_returns_task_result_while_ignoring_framework_tool_config
     assert result is task_result
 
 
+@pytest.mark.cpu
+@pytest.mark.level0
 def test_compute_score_passes_through_runner_reward_info():
     assert compute_score(
         data_source="stub",

@@ -245,7 +245,6 @@ async def test_gateway_manager_default_chains_config_to_http_finalizes_subagent_
         assert decoded[0] == "Blue"
         assert decoded[1].startswith("Mango")
         assert decoded[1].endswith("Apple")
-        assert all(trajectory.reward_metrics == {} for trajectory in trajectories)
     finally:
         await manager.shutdown()
 

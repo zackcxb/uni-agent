@@ -29,6 +29,8 @@ class _Agent:
         return AgentResult(info={"steps": 1}, finished=False)
 
 
+@pytest.mark.cpu
+@pytest.mark.level0
 @pytest.mark.asyncio
 async def test_swe_bench_multilingual_propagates_finished(monkeypatch):
     async def compute_reward(*args, **kwargs):
@@ -54,6 +56,8 @@ async def test_swe_bench_multilingual_propagates_finished(monkeypatch):
     assert result.finished is False
 
 
+@pytest.mark.cpu
+@pytest.mark.level0
 @pytest.mark.asyncio
 async def test_terminal_bench_propagates_finished(monkeypatch):
     async def compute_reward(*args, **kwargs):

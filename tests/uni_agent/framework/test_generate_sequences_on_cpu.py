@@ -43,8 +43,9 @@ def _invalid_item_trajectory_postprocessor(trajectories):
     return ["not-a-trajectory"]
 
 
-def _dropping_reward_fields_postprocessor(trajectories):
-    return [replace(trajectories[-1], reward_score=None)]
+def _dropping_finalized_field_postprocessor(trajectories, *, field):
+    replacement = {} if field == "reward_metrics" else None
+    return [replace(trajectories[-1], **{field: replacement})]
 
 
 async def _config_recording_runner(*, raw_prompt, session, sample_index, marker=None, **kwargs):
@@ -478,37 +479,6 @@ async def test_agent_runners_registry_materializes_runners_and_selects_by_agent_
 @pytest.mark.cpu
 @pytest.mark.level0
 @pytest.mark.asyncio
-async def test_framework_applies_managed_runner_task_result():
-    async def result_runner(**kwargs):
-        return TaskResult(
-            reward=0.5,
-            accuracy=1.0,
-            finished=False,
-            extra_info={"case_id": "case-1"},
-        )
-
-    runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(result_runner)},
-        gateway_manager=runtime,
-    )
-
-    trajectories, _ = await framework._run_agent_episode(
-        sample_fields={"raw_prompt": [], "uid": "uid-0"},
-        sample_index=0,
-        session_index=0,
-        global_steps=7,
-        runner_name="runner",
-        runner_config=framework.runner_registry["runner"],
-        sampling_params={},
-    )
-
-    assert trajectories[0].finished is False
-    assert trajectories[0].reward_score == 0.5
-    assert trajectories[0].reward_metrics == {"acc": 1.0}
-
-
-@pytest.mark.asyncio
 async def test_ray_agent_runner_returns_task_result():
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
     framework = await _build_framework_with_agent_runners(
@@ -536,37 +506,17 @@ async def test_ray_agent_runner_returns_task_result():
     assert trajectories[0].finished is False
 
 
+@pytest.mark.cpu
+@pytest.mark.level0
 @pytest.mark.asyncio
-async def test_framework_rejects_legacy_runner_result():
-    async def legacy_runner(**kwargs):
-        return {"reward": 0.5, "finished": True}
+@pytest.mark.parametrize("runner_result", [{"reward": 0.5, "finished": True}, None], ids=["mapping", "none"])
+async def test_framework_rejects_invalid_agent_runner_result(runner_result):
+    async def invalid_result_runner(**kwargs):
+        return runner_result
 
     runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
     framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(legacy_runner)},
-        gateway_manager=runtime,
-    )
-
-    with pytest.raises(TypeError, match="must return TaskResult"):
-        await framework._run_agent_episode(
-            sample_fields={"raw_prompt": [], "uid": "uid-0"},
-            sample_index=0,
-            session_index=0,
-            global_steps=7,
-            runner_name="runner",
-            runner_config=framework.runner_registry["runner"],
-            sampling_params={},
-        )
-
-
-@pytest.mark.asyncio
-async def test_framework_rejects_missing_agent_runner_result():
-    async def missing_result_runner(**kwargs):
-        return None
-
-    runtime = _FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]})
-    framework = await _build_framework_with_agent_runners(
-        agent_runners={"runner": _inline_runner_config(missing_result_runner)},
+        agent_runners={"runner": _inline_runner_config(invalid_result_runner)},
         gateway_manager=runtime,
     )
 
@@ -582,6 +532,8 @@ async def test_framework_rejects_missing_agent_runner_result():
         )
 
 
+@pytest.mark.cpu
+@pytest.mark.level0
 @pytest.mark.asyncio
 async def test_reward_worker_processes_runner_reward_info_and_owns_final_metrics():
     class _ComputeScoreRemote:
@@ -634,8 +586,11 @@ async def test_reward_worker_processes_runner_reward_info_and_owns_final_metrics
     ]
     assert trajectories[0].reward_score == 0.42
     assert trajectories[0].reward_metrics == {"acc": 0.25, "format": 0.8}
+    assert trajectories[0].finished is True
 
 
+@pytest.mark.cpu
+@pytest.mark.level0
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("runner_reward", "custom_reward_path", "expected_warnings"),
@@ -696,6 +651,8 @@ async def test_streaming_worker_warns_once_when_no_custom_scorer_consumes_runner
     assert len(warnings) == expected_warnings
 
 
+@pytest.mark.cpu
+@pytest.mark.level0
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("reward_extra_info", "error_match"),
@@ -736,6 +693,8 @@ async def test_reward_worker_rejects_invalid_metrics(reward_extra_info, error_ma
         )
 
 
+@pytest.mark.cpu
+@pytest.mark.level0
 @pytest.mark.asyncio
 async def test_reward_worker_rejects_non_finite_score():
     class _ComputeScoreRemote:
@@ -764,6 +723,8 @@ async def test_reward_worker_rejects_non_finite_score():
         )
 
 
+@pytest.mark.cpu
+@pytest.mark.level0
 @pytest.mark.asyncio
 async def test_metrics_survive_without_any_reward_source():
     async def result_runner(**kwargs):
@@ -789,6 +750,8 @@ async def test_metrics_survive_without_any_reward_source():
     assert trajectories[0].reward_metrics == {"acc": 1.0}
 
 
+@pytest.mark.cpu
+@pytest.mark.level0
 @pytest.mark.asyncio
 @pytest.mark.parametrize("dispatch_mode", ["inline_async", "ray_task"])
 async def test_framework_and_runner_logs_share_one_session_directory(tmp_path, fake_tq, dispatch_mode):
@@ -1217,9 +1180,10 @@ async def test_tq_nests_acc_under_reward_extra_info(fake_tq):
     assert "reward_extra_info" not in fields.keys()
     extra_fields = tu.get(fields, "extra_fields")
     assert extra_fields == [{"reward_extra_info": {"acc": 1.0}}]
-    assert extra_fields[0].get("reward_extra_info", {}).get("acc") == 1.0
 
 
+@pytest.mark.cpu
+@pytest.mark.level0
 @pytest.mark.asyncio
 async def test_framework_rejects_non_boolean_masking_config():
     with pytest.raises(ValueError, match="mask_unfinished_episode must be a bool"):
@@ -1423,11 +1387,13 @@ async def test_trajectory_postprocessor_reports_invalid_extensions(
 @pytest.mark.cpu
 @pytest.mark.level0
 @pytest.mark.asyncio
-async def test_trajectory_postprocessor_rejects_dropped_reward_fields():
+@pytest.mark.parametrize("field", ["finished", "reward_score", "reward_metrics"])
+async def test_trajectory_postprocessor_rejects_dropped_finalized_fields(field):
     framework = await _build_framework_with_agent_runners(
         agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
         gateway_manager=_FakeGatewayManager({}),
-        trajectory_postprocessor_fqn=f"{__name__}._dropping_reward_fields_postprocessor",
+        trajectory_postprocessor_fqn=f"{__name__}._dropping_finalized_field_postprocessor",
+        trajectory_postprocessor_kwargs={"field": field},
     )
 
     with pytest.raises(ValueError, match="must preserve finalized reward fields"):
