@@ -53,8 +53,10 @@ class Trajectory:
             Agent Framework after the managed runner returns.
         reward_score: Optional scalar reward assigned by the Agent Framework
             from a managed Runner or RewardLoopWorker.
-        reward_metrics: Scalar validation metrics assigned by the Agent
-            Framework or RewardLoopWorker.
+        reward_metrics: Validation metrics and scorer metadata assigned by the
+            Agent Framework or RewardLoopWorker. VERL may also use string or
+            structured values as metadata; only values supported by downstream
+            aggregation are treated as numeric metrics.
         num_turns: Chat-turn count materialized with the trajectory.
         routed_experts: Optional expert-routing data captured by the backend.
         multi_modal_data: Optional image/video data associated with the prompt.
@@ -69,7 +71,7 @@ class Trajectory:
     response_logprobs: list[float] | None = None
     finished: bool | None = None
     reward_score: float | None = None
-    reward_metrics: dict[str, int | float | bool] = field(default_factory=dict)
+    reward_metrics: dict[str, Any] = field(default_factory=dict)
     num_turns: int = 0
     chain_id: int | None = None
     routed_experts: torch.Tensor | np.ndarray | None = None

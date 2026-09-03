@@ -296,9 +296,9 @@ class GatewayAgentFramework(AgentFramework):
     Each sample in the batch is run as an independent Gateway session: the agent
     communicates through the Gateway's provider adapter (OpenAI Chat Completions
     or Anthropic Messages), and the Gateway collects token-level trajectories. After
-    finalization, an available RewardLoopWorker processes the managed runner's
-    reward information and owns the final score. Without streaming worker
-    handles, the runner reward is retained as the non-streaming fallback.
+    finalization, a configured custom scorer receives the managed runner's reward
+    information and owns the final score. Without a custom scorer, a non-None
+    runner reward is retained; a RewardLoopWorker is used when the runner omits it.
     The framework then writes them to the TransferQueue schema consumed by sync training.
     """
 
@@ -332,7 +332,6 @@ class GatewayAgentFramework(AgentFramework):
         }
         self.reward_loop_worker_handles = list(reward_loop_worker_handles) if reward_loop_worker_handles else None
         self._custom_reward_function_configured = custom_reward_function_configured
-        self._warned_unconsumed_runner_reward = False
         if self.reward_loop_worker_handles is None:
             logger.info("No streaming reward worker handles; using the non-streaming reward path")
         self._processor = processor
@@ -854,6 +853,22 @@ class GatewayAgentFramework(AgentFramework):
                 )
                 raise
 
+            # Make the Runner's canonical result visible to postprocessors before
+            # they filter or reorder trajectories.  These fields are the
+            # Framework-owned trajectory representation of the session result;
+            # scorer metadata remains a separate Worker output channel.
+            if session_trajectories:
+                runner_metrics = {} if task_result.accuracy is None else {"acc": task_result.accuracy}
+                session_trajectories = [
+                    replace(
+                        trajectory,
+                        finished=task_result.finished,
+                        reward_score=task_result.reward,
+                        reward_metrics=dict(runner_metrics),
+                    )
+                    for trajectory in session_trajectories
+                ]
+
             if self._trajectory_postprocessor is not None:
                 session_trajectories = await self._apply_trajectory_postprocessor(session_trajectories)
 
@@ -865,20 +880,7 @@ class GatewayAgentFramework(AgentFramework):
                 )
                 return session_trajectories, sample_fields
 
-            if self.reward_loop_worker_handles:
-                if (
-                    task_result.reward is not None
-                    and not self._custom_reward_function_configured
-                    and not self._warned_unconsumed_runner_reward
-                ):
-                    self._warned_unconsumed_runner_reward = True
-                    logger.warning(
-                        "AgentRunner returned a reward, but the configured streaming RewardLoopWorker does not "
-                        "automatically consume AgentRunner rewards and reward.custom_reward_function.path is not "
-                        "set; the default scorer will determine the final reward. Configure "
-                        "uni_agent.framework.task_runner.compute_score to pass the Runner reward through, or "
-                        "provide a custom scorer that consumes extra_info['runner_reward_info']."
-                    )
+            if self.reward_loop_worker_handles and self._custom_reward_function_configured:
                 annotations = await self._score_trajectories(
                     session_trajectories,
                     sample_fields,
@@ -886,10 +888,11 @@ class GatewayAgentFramework(AgentFramework):
                 )
                 reward_source = "reward_loop_worker"
             elif task_result.reward is not None:
-                # Preserve Runner rewards outside streaming scoring; TQ training replaces
-                # these rm_scores during its colocated post-rollout reward pass.
-                annotations = [(task_result.reward, {}) for _ in session_trajectories]
+                annotations = [(float(task_result.reward), {}) for _ in session_trajectories]
                 reward_source = "agent_runner"
+            elif self.reward_loop_worker_handles:
+                annotations = await self._score_trajectories(session_trajectories, sample_fields, task_result)
+                reward_source = "reward_loop_worker"
             else:
                 annotations = None
                 reward_source = None
@@ -1070,13 +1073,11 @@ class GatewayAgentFramework(AgentFramework):
             extra = {}
         if not isinstance(extra, dict):
             raise ValueError("RewardLoopWorker reward_extra_info must be a dict")
-        for key, value in extra.items():
+        for key in extra:
             if not isinstance(key, str):
                 raise ValueError("RewardLoopWorker reward_extra_info keys must be strings")
             if key == "reward":
                 raise ValueError("RewardLoopWorker reward_extra_info key 'reward' is reserved")
-            if not isinstance(value, int | float | bool):
-                raise ValueError(f"RewardLoopWorker reward_extra_info[{key!r}] must be scalar (int/float/bool)")
         # Each trajectory needs its own dict: downstream code merges into it.
         return [(score, dict(extra)) for _ in session_trajectories]
 

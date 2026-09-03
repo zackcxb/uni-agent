@@ -163,7 +163,7 @@ TaskResult(
 
 How the Agent Framework consumes the result depends on the reward topology:
 
-- With streaming Reward Loop Worker handles, the Worker always processes the finalized trajectory, even when the Runner returned a reward. The Framework exposes the Runner result under `extra_info["runner_reward_info"]`; the Worker owns the final reward and validation metrics.
+- With streaming Reward Loop Worker handles, a configured custom scorer processes the finalized trajectory and receives the Runner result under `extra_info["runner_reward_info"]`. Without a custom scorer, a non-`None` Runner reward is retained directly; the Worker is consulted only when the Runner did not return a reward.
 - Without streaming handles, the Framework retains the Runner reward and accuracy and writes a sparse token-level `rm_scores` tensor with the reward on the final token. This is the final result for standalone/inference. TQ training subsequently runs its colocated reward pass and replaces `rm_scores`.
 
 The colocated TQ pass replaces `rm_scores` and writes scorer metrics as top-level
@@ -182,8 +182,16 @@ The result fields have separate contracts:
 - `finished` is a tri-state episode fact, not a validation metric.
 - `extra_info` may contain structured scorer input. A streaming Worker receives it as `extra_info["runner_reward_info"]["reward_context"]`; it is never aggregated directly as a validation metric.
 
+The names at the two boundaries are intentional: `Trajectory.reward_metrics` is
+the Framework's internal field, while VERL's Worker response calls the same
+output channel `reward_extra_info` when it is serialized under
+`extra_fields["reward_extra_info"]`. `TaskResult.extra_info` is a separate
+Runner-to-scorer context channel and is not copied into either metrics field.
+
 Runner and Worker metrics are not merged in streaming mode. The Worker's
-`reward_extra_info` is the complete final metric set.
+`reward_extra_info` is the complete final metric/metadata set returned by the
+Worker. Values are passed through using VERL's permissive interface; downstream
+validation aggregates only values it recognizes as metrics.
 
 Agent completion is factual episode metadata; the Framework, not the Task, decides how training consumes it. When the training configuration enables `mask_unfinished_episode`, an episode with `finished=False` is still written and tagged as successful, but its TransferQueue `response_mask` and `loss_mask` are all zero so it does not contribute policy gradients, loss-normalization counts, or auxiliary losses.
 
@@ -194,8 +202,9 @@ For Agent Runners that always return a reward, the built-in
 accuracy through the streaming Worker. Configure it through verl's existing
 `reward.custom_reward_function` interface. Custom scorers can instead combine
 the Runner payload with trajectory-dependent signals. When streaming handles
-exist and a Runner returns a reward without a custom scorer configured, the
-Framework warns once that verl's default scorer will determine the final reward.
+exist, a configured custom scorer owns the final reward; otherwise a non-`None`
+Runner reward is used directly, and the Worker is only consulted when the Runner
+did not return a reward.
 
 Without streaming handles, a missing Runner reward leaves `rm_scores` at zero
 and the Framework logs this at info level. A TQ training reward pass does not

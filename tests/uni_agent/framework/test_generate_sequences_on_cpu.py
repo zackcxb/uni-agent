@@ -31,6 +31,11 @@ async def _async_trajectory_postprocessor(trajectories):
     return list(trajectories[-1:])
 
 
+def _recording_reward_postprocessor(trajectories):
+    _POSTPROCESSOR_CALLS.append(tuple(trajectories))
+    return list(trajectories)
+
+
 def _empty_trajectory_postprocessor(_trajectories):
     return []
 
@@ -381,7 +386,7 @@ def _trajectory(
     response_logprobs: list[float] | None = None,
     finished: bool | None = None,
     reward_score: float | None = None,
-    reward_metrics: dict[str, int | float | bool] | None = None,
+    reward_metrics: dict[str, object] | None = None,
     num_turns: int = 2,
     routed_experts: object | None = None,
     extra_fields: dict[str, object] | None = None,
@@ -577,6 +582,79 @@ async def test_none_agent_runner_result_uses_empty_task_result_for_trajectory_sc
 @pytest.mark.cpu
 @pytest.mark.level0
 @pytest.mark.asyncio
+async def test_runner_reward_is_used_without_custom_scorer_even_when_worker_exists():
+    class _ComputeScoreRemote:
+        def __init__(self):
+            self.calls = []
+
+        async def remote(self, data):
+            self.calls.append(data)
+            return {"reward_score": 0.25, "reward_extra_info": {"scorer": "default"}}
+
+    class _Worker:
+        def __init__(self):
+            self.compute_score = _ComputeScoreRemote()
+
+    async def result_runner(**kwargs):
+        return TaskResult(reward=0.75, accuracy=0.5, finished=True)
+
+    worker = _Worker()
+    framework = await _build_framework_with_agent_runners(
+        agent_runners={"runner": _inline_runner_config(result_runner)},
+        gateway_manager=_FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]}),
+        reward_loop_worker_handles=[worker],
+    )
+
+    trajectories, _ = await framework._run_agent_episode(
+        sample_fields={"raw_prompt": [], "uid": "uid-0"},
+        sample_index=0,
+        session_index=0,
+        global_steps=7,
+        runner_name="runner",
+        runner_config=framework.runner_registry["runner"],
+        sampling_params={},
+    )
+
+    assert worker.compute_score.calls == []
+    assert trajectories[0].reward_score == 0.75
+    assert trajectories[0].reward_metrics == {"acc": 0.5}
+    assert trajectories[0].finished is True
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+@pytest.mark.asyncio
+async def test_postprocessor_sees_runner_annotations_before_scoring():
+    _POSTPROCESSOR_CALLS.clear()
+
+    async def result_runner(**kwargs):
+        return TaskResult(reward=0.75, accuracy=0.5, finished=False)
+
+    framework = await _build_framework_with_agent_runners(
+        agent_runners={"runner": _inline_runner_config(result_runner)},
+        gateway_manager=_FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]}),
+        trajectory_postprocessor_fqn=f"{__name__}._recording_reward_postprocessor",
+    )
+
+    await framework._run_agent_episode(
+        sample_fields={"raw_prompt": [], "uid": "uid-0"},
+        sample_index=0,
+        session_index=0,
+        global_steps=7,
+        runner_name="runner",
+        runner_config=framework.runner_registry["runner"],
+        sampling_params={},
+    )
+
+    processed = _POSTPROCESSOR_CALLS[0]
+    assert [(trajectory.reward_score, trajectory.reward_metrics, trajectory.finished) for trajectory in processed] == [
+        (0.75, {"acc": 0.5}, False)
+    ]
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+@pytest.mark.asyncio
 async def test_reward_worker_processes_runner_reward_info_and_owns_final_metrics():
     class _ComputeScoreRemote:
         def __init__(self):
@@ -604,6 +682,7 @@ async def test_reward_worker_processes_runner_reward_info_and_owns_final_metrics
         agent_runners={"runner": _inline_runner_config(result_runner)},
         gateway_manager=runtime,
         reward_loop_worker_handles=[worker],
+        reward_config={"custom_reward_function": {"path": "pkg://custom_reward.py"}},
     )
 
     trajectories, _ = await framework._run_agent_episode(
@@ -635,18 +714,16 @@ async def test_reward_worker_processes_runner_reward_info_and_owns_final_metrics
 @pytest.mark.level0
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("runner_reward", "custom_reward_path", "expected_warnings"),
+    ("runner_reward", "custom_reward_path"),
     [
-        (0.5, None, 1),
-        (None, None, 0),
-        (0.5, "pkg://custom_reward.py", 0),
+        (0.5, None),
+        (None, None),
+        (0.5, "pkg://custom_reward.py"),
     ],
 )
-async def test_streaming_worker_warns_once_when_no_custom_scorer_consumes_runner_reward(
-    monkeypatch,
+async def test_streaming_worker_uses_runner_reward_without_custom_scorer(
     runner_reward,
     custom_reward_path,
-    expected_warnings,
 ):
     class _ComputeScoreRemote:
         async def remote(self, data):
@@ -671,13 +748,8 @@ async def test_streaming_worker_warns_once_when_no_custom_scorer_consumes_runner
         reward_config={"custom_reward_function": {"path": custom_reward_path}},
     )
 
-    warning_messages = []
-    monkeypatch.setattr(
-        "uni_agent.framework.framework.logger.warning",
-        lambda message, *args: warning_messages.append(message % args if args else message),
-    )
     for sample_index in range(2):
-        await framework._run_agent_episode(
+        trajectories, _ = await framework._run_agent_episode(
             sample_fields={"raw_prompt": [], "uid": f"uid-{sample_index}"},
             sample_index=sample_index,
             session_index=0,
@@ -686,11 +758,12 @@ async def test_streaming_worker_warns_once_when_no_custom_scorer_consumes_runner
             runner_config=framework.runner_registry["runner"],
             sampling_params={},
         )
-
-    warnings = [
-        message for message in warning_messages if "does not automatically consume AgentRunner rewards" in message
-    ]
-    assert len(warnings) == expected_warnings
+        if runner_reward is not None and custom_reward_path is None:
+            assert trajectories[0].reward_score == runner_reward
+        elif custom_reward_path is not None:
+            assert trajectories[0].reward_score == 0.25
+        else:
+            assert trajectories[0].reward_score == 0.25
 
 
 @pytest.mark.cpu
@@ -701,7 +774,6 @@ async def test_streaming_worker_warns_once_when_no_custom_scorer_consumes_runner
     [
         ([], "reward_extra_info must be a dict"),
         ({1: 0.1}, "reward_extra_info keys must be strings"),
-        ({"trace": [0.1, 0.2]}, r"reward_extra_info\['trace'\] must be scalar"),
         ({"reward": 0.1}, "key 'reward' is reserved"),
     ],
 )
@@ -733,6 +805,47 @@ async def test_reward_worker_rejects_invalid_metrics(reward_extra_info, error_ma
             runner_config=framework.runner_registry["runner"],
             sampling_params={},
         )
+
+
+@pytest.mark.cpu
+@pytest.mark.level0
+@pytest.mark.asyncio
+async def test_reward_worker_accepts_structured_reward_extra_info():
+    class _ComputeScoreRemote:
+        async def remote(self, data):
+            return {
+                "reward_score": 0.42,
+                "reward_extra_info": {
+                    "pred": "A",
+                    "reasoning": "matched",
+                    "trace": [0.1, 0.2],
+                },
+            }
+
+    class _Worker:
+        compute_score = _ComputeScoreRemote()
+
+    framework = await _build_framework_with_agent_runners(
+        agent_runners={"runner": _inline_runner_config(_async_noop_runner)},
+        gateway_manager=_FakeGatewayManager({"session-sample-0-rollout-0": [_trajectory()]}),
+        reward_loop_worker_handles=[_Worker()],
+    )
+
+    trajectories, _ = await framework._run_agent_episode(
+        sample_fields={"raw_prompt": [], "uid": "uid-0"},
+        sample_index=0,
+        session_index=0,
+        global_steps=7,
+        runner_name="runner",
+        runner_config=framework.runner_registry["runner"],
+        sampling_params={},
+    )
+
+    assert trajectories[0].reward_metrics == {
+        "pred": "A",
+        "reasoning": "matched",
+        "trace": [0.1, 0.2],
+    }
 
 
 @pytest.mark.cpu
