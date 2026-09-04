@@ -6,8 +6,8 @@ from uni_agent.framework.task_runner import (
     _inject_gateway_tunnel,
     _rewrite_gateway_url,
     compute_score,
-    score_from_runner_result,
     run_task,
+    score_from_runner_result,
 )
 from uni_agent.gateway.session import SessionHandle
 from uni_agent.tasks import TaskConfig, TaskResult
