@@ -86,7 +86,7 @@ class _ConfigRecordingClassRunner:
 
 
 async def _async_noop_runner(**kwargs):
-    return TaskResult()
+    return None
 
 
 async def _inline_runner_proxy(*, runner_key, **kwargs):
@@ -721,7 +721,7 @@ async def test_reward_worker_processes_runner_reward_info_and_owns_final_metrics
         (0.5, "pkg://custom_reward.py"),
     ],
 )
-async def test_streaming_worker_uses_runner_reward_without_custom_scorer(
+async def test_streaming_worker_is_used_when_runner_reward_missing_or_custom_scorer_configured(
     runner_reward,
     custom_reward_path,
 ):
@@ -777,7 +777,7 @@ async def test_streaming_worker_uses_runner_reward_without_custom_scorer(
         ({"reward": 0.1}, "key 'reward' is reserved"),
     ],
 )
-async def test_reward_worker_rejects_invalid_metrics(reward_extra_info, error_match):
+async def test_reward_worker_rejects_invalid_reward_extra_info(reward_extra_info, error_match):
     class _ComputeScoreRemote:
         async def remote(self, data):
             return {"reward_score": 0.42, "reward_extra_info": reward_extra_info}

@@ -10,7 +10,7 @@ from verl.workers.rollout.replica import TokenOutput
 
 async def logging_runner(**kwargs):
     logging.getLogger("test.runner").info("runner task log")
-    return TaskResult()
+    return None
 
 
 async def typed_result_runner(**kwargs):
