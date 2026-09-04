@@ -198,13 +198,17 @@ Agent completion is factual episode metadata; the Framework, not the Task, decid
 Masking stops at the loss. The trajectory keeps its reward in `rm_scores`, so a group-relative estimator such as GRPO or RLOO still folds that reward into the group mean and standard deviation, shifting the advantages of the sibling rollouts sharing its `uid`. The masked trajectory itself gets a zero advantage, and it still costs a full forward and backward pass. Treat unfinished episodes as evidence that keeps the baseline honest, not as samples removed from the batch.
 
 For Agent Runners that always return a reward, the built-in
-`uni_agent.framework.task_runner.compute_score` scorer passes that reward and its
+`uni_agent.framework.task_runner.score_from_runner_result` scorer passes that reward and its
 accuracy through the streaming Worker. Configure it through verl's existing
 `reward.custom_reward_function` interface. Custom scorers can instead combine
 the Runner payload with trajectory-dependent signals. When streaming handles
 exist, a configured custom scorer owns the final reward; otherwise a non-`None`
 Runner reward is used directly, and the Worker is only consulted when the Runner
 did not return a reward.
+
+The former `compute_score` name remains as a compatibility alias for existing
+configs; new configs should use `score_from_runner_result` to make the payload
+source explicit.
 
 Without streaming handles, a missing Runner reward leaves `rm_scores` at zero
 and the Framework logs this at info level. A TQ training reward pass does not

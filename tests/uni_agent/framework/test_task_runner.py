@@ -6,6 +6,7 @@ from uni_agent.framework.task_runner import (
     _inject_gateway_tunnel,
     _rewrite_gateway_url,
     compute_score,
+    score_from_runner_result,
     run_task,
 )
 from uni_agent.gateway.session import SessionHandle
@@ -151,8 +152,9 @@ async def test_run_task_returns_task_result_while_ignoring_framework_tool_config
 
 @pytest.mark.cpu
 @pytest.mark.level0
-def test_compute_score_passes_through_runner_reward_info():
-    assert compute_score(
+def test_score_from_runner_result_passes_through_runner_reward_info():
+    assert compute_score is score_from_runner_result
+    assert score_from_runner_result(
         data_source="stub",
         solution_str="unused",
         ground_truth="unused",

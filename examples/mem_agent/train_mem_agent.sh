@@ -184,7 +184,7 @@ PY
     ++actor_rollout_ref.rollout.custom.agent_framework.agent_runners.task.runner_kwargs.model_name="${SERVED_MODEL_NAME}" \
     ++actor_rollout_ref.rollout.custom.agent_framework.mask_unfinished_episode=False \
     reward.custom_reward_function.path=pkg://uni_agent.framework.task_runner \
-    reward.custom_reward_function.name=compute_score \
+    reward.custom_reward_function.name=score_from_runner_result \
     trainer.project_name="${PROJECT_NAME}" \
     trainer.experiment_name="${EXPERIMENT_NAME}" \
     trainer.logger="['console','tensorboard']" \

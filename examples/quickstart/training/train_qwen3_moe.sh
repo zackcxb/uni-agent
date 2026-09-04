@@ -240,7 +240,7 @@ ray job submit --no-wait --runtime-env $RUNTIME_ENV \
     actor_rollout_ref.ref.megatron.expert_tensor_parallel_size=${train_etp} \
     reward.reward_manager.name=dapo \
     reward.custom_reward_function.path=pkg://uni_agent.framework.task_runner \
-    reward.custom_reward_function.name=compute_score \
+    reward.custom_reward_function.name=score_from_runner_result \
     +reward.reward_kwargs.overlong_buffer_cfg.enable=${enable_overlong_buffer} \
     +reward.reward_kwargs.overlong_buffer_cfg.len=${overlong_buffer_len} \
     +reward.reward_kwargs.overlong_buffer_cfg.penalty_factor=${overlong_penalty_factor} \

@@ -75,7 +75,7 @@ def _inject_gateway_tunnel(task: dict[str, Any], base_url: str) -> dict[str, Any
     )
 
 
-def compute_score(
+def score_from_runner_result(
     *,
     data_source: str,
     solution_str: str,
@@ -83,9 +83,19 @@ def compute_score(
     extra_info: dict[str, Any],
     **_reward_manager_kwargs: Any,
 ) -> dict[str, int | float | bool]:
-    """Pass the managed runner's reward payload through a RewardLoopWorker."""
+    """Adapt the managed Runner result for a VERL RewardLoopWorker scorer.
+
+    The Worker may still apply its own post-processing (for example DAPO's
+    overlong penalty), so this is an adapter for the Runner payload rather than
+    a bypass of the Worker.
+    """
     runner_reward_info = extra_info["runner_reward_info"]
     return {**runner_reward_info["metrics"], "score": float(runner_reward_info["reward"])}
+
+
+# Keep the conventional VERL callback name available for existing configs.
+# New configs should prefer the descriptive ``score_from_runner_result`` name.
+compute_score = score_from_runner_result
 
 
 async def run_task(
